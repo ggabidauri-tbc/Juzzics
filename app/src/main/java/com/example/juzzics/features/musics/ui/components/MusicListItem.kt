@@ -18,9 +18,9 @@ import com.example.juzzics.common.base.extensions.toMusicDuration
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 
 @Composable
-fun MusicListItem(musicFile: MusicFileUi) {
+fun MusicListItem(musicFile: MusicFileUi, modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 10.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(

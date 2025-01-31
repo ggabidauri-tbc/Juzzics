@@ -131,6 +131,9 @@ abstract class BaseViewModel(
         stateList[keyString]?.postChange { copy(value) }
     }
 
+
+    // ---------------------- String Extension - State Setters ----------------------
+
     /** set value to a state by calling this function on "StateKey" String */
     infix fun <T> String.setValue(value: T) {
         updateState(this, value)
@@ -141,20 +144,8 @@ abstract class BaseViewModel(
         updateState(this, value)
     }
 
-    /** set value to a state with corresponding "stateKey" by calling this function on value itself */
-    infix fun <T> T.saveIn(stateKey: String) {
-        updateState(stateKey, this)
-    }
 
-    /** set value to a state with corresponding "stateKey" by calling this function on value itself */
-    infix fun <T> T.saveInStateOf(stateKey: String) = this.saveIn(stateKey)
-
-
-    /** launches a coroutine and emits Action */
-    fun <T : UiEvent> T.emit() = viewModelScope.launch { uiEvent.emit(this@emit) }
-
-    /** use inside coroutineScope to emit Action */
-    suspend fun emitEvent(uiEvent: UiEvent) = this.uiEvent.emit(uiEvent)
+    // ---------------------- String Extension - State Getters ----------------------
 
     /** returns state data by stateKey */
     fun <T> String.typeOf() = stateList[this]?.takeAs<T>()
@@ -172,11 +163,29 @@ abstract class BaseViewModel(
      * @exception DOES_NOT use with invoke() or any state getter*/
     operator fun String.not(): String = stateList[this@not]?.takeAs<String>() ?: ""
 
-
     /** gets state by calling on a stateKey in Composable functions if in context of [BaseState]
      * @return value or Blank string if value is null
      *
      * @exception DOES_NOT use with invoke() or any state getter*/
     fun String.stateOrBlank(): String = stateList[this@stateOrBlank]?.takeAs<String>() ?: ""
 
+
+    // ----------------------Infix - State Setters ----------------------
+
+    /** set value to a state with corresponding "stateKey" by calling this function on value itself */
+    infix fun <T> T.saveIn(stateKey: String) {
+        updateState(stateKey, this)
+    }
+
+    /** set value to a state with corresponding "stateKey" by calling this function on value itself */
+    infix fun <T> T.saveInStateOf(stateKey: String) = this.saveIn(stateKey)
+
+
+    // ---------------------- Emit UiEvents ----------------------
+
+    /** launches a coroutine and emits Action */
+    fun <T : UiEvent> T.emit() = viewModelScope.launch { uiEvent.emit(this@emit) }
+
+    /** use inside coroutineScope to emit Action */
+    suspend fun emitEvent(uiEvent: UiEvent) = this.uiEvent.emit(uiEvent)
 }

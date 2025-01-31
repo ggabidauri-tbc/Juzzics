@@ -29,6 +29,7 @@ class MusicVM(
         CLICKED_MUSIC to State<MusicFileUi>(),
         IS_PLAYING to State(false),
         SCROLL_POSITION to State(0),
+        SCENE_NAME to State("0"),
     )
 ) {
     companion object {
@@ -37,6 +38,7 @@ class MusicVM(
         const val CLICKED_MUSIC = "clickedMusic"
         const val IS_PLAYING = "isPlaying"
         const val SCROLL_POSITION = "Scroll_POSISION"
+        const val SCENE_NAME = "sceneName"
     }
 
     init {
@@ -52,6 +54,7 @@ class MusicVM(
             is PlayOrPauseAction -> playMusicLogic(CLICKED_MUSIC(), context)
             is OnDragEndAction -> onDragEnd(action.list)
             is FindLyricsAction -> findLyrics()
+            is UpdateSceneAction -> SCENE_NAME(action.scene)
         }
     }
 
@@ -61,6 +64,7 @@ class MusicVM(
     object PlayPrevAction : Action
     object PlayOrPauseAction : Action
     object FindLyricsAction : Action
+    data class UpdateSceneAction(val scene: String) : Action
     data class OnDragEndAction(val list: SnapshotStateList<MusicFileUi>) : Action
     data class ScrollToPositionUiEvent(val position: Int) : UiEvent
 }

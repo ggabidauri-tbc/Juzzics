@@ -1,6 +1,5 @@
 package com.example.juzzics.common.uiComponents.dragable
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -25,9 +24,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun <T : Any> ReorderableList(
     modifier: Modifier,
@@ -141,6 +140,7 @@ fun <T : Any> ReorderableList(
             Column(
                 modifier = Modifier
                     .clickable { onClick.invoke(item) }
+                    .zIndex(if (index == currentIndexOfDraggedItem) 1f else 0f)
                     .graphicsLayer {
                         translationY =
                             calculatedOffset.takeIf { index == currentIndexOfDraggedItem } ?: 0f
@@ -149,7 +149,7 @@ fun <T : Any> ReorderableList(
                         if (index == currentIndexOfDraggedItem) it
                             .clip(RoundedCornerShape(16.dp))
                             .background(MaterialTheme.colorScheme.tertiaryContainer)
-                        else it.animateItemPlacement()
+                        else it.animateItem()
                     }) {
                 (if (index == currentIndexOfDraggedItem) draggedItem else item)?.let { content(it) }
             }
@@ -163,4 +163,3 @@ fun <T> MutableList<T>.moveAt(oldIndex: Int, newIndex: Int) {
     removeAt(oldIndex)
     add(newIndex, item)
 }
-

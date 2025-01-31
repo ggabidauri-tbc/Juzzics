@@ -11,14 +11,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import com.example.juzzics.common.base.BaseHandler
 import com.example.juzzics.common.base.extensions.with2
 import com.example.juzzics.common.base.viewModel.Action
-import com.example.juzzics.common.base.viewModel.State
+import com.example.juzzics.common.base.viewModel.BaseState
 import com.example.juzzics.common.base.viewModel.UiEvent
 import com.example.juzzics.common.base.viewModel.invoke
 import com.example.juzzics.common.base.viewModel.not
@@ -29,7 +28,7 @@ import kotlinx.coroutines.flow.SharedFlow
 
 @Composable
 fun FetchLyricsScreen(
-    states: Map<String, MutableState<State<Any>>>,
+    states: BaseState,
     uiEvent: SharedFlow<UiEvent>,
     onAction: (Action) -> Unit
 ) {
