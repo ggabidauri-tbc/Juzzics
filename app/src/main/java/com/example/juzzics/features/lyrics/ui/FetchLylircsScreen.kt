@@ -37,29 +37,31 @@ fun FetchLyricsScreen(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            uiEvent.BaseHandler {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(top = 10.ofHeight()),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    TextField(
-                        value = !ARTIST,
-                        onValueChange = { onAction(FetchLyricsVM.UpdateArtistAction(it)) })
-                    TextField(
-                        value = !TITLE,
-                        onValueChange = { onAction(FetchLyricsVM.UpdateTitleAction(it)) })
-                    Button(onClick = { onAction(FetchLyricsVM.FetchLyricsAction) }) {
-                        Text("Search Lyrics")
+            uiEvent.BaseHandler(
+                content = {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(top = 10.ofHeight()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        TextField(
+                            value = !ARTIST,
+                            onValueChange = { onAction(FetchLyricsVM.UpdateArtistAction(it)) })
+                        TextField(
+                            value = !TITLE,
+                            onValueChange = { onAction(FetchLyricsVM.UpdateTitleAction(it)) })
+                        Button(onClick = { onAction(FetchLyricsVM.FetchLyricsAction) }) {
+                            Text("Search Lyrics")
+                        }
+                        Text(
+                            text = LYRICS<LyricsDomain>()?.lyrics.orEmpty(),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.verticalScroll(rememberScrollState(0))
+                        )
                     }
-                    Text(
-                        text = LYRICS<LyricsDomain>()?.lyrics.orEmpty(),
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.verticalScroll(rememberScrollState(0))
-                    )
                 }
-            }
+            )
         }
     }
 }

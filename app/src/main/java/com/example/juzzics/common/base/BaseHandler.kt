@@ -28,7 +28,8 @@ import kotlinx.coroutines.flow.SharedFlow
 @Composable
 fun SharedFlow<UiEvent>.BaseHandler(
     showLoader: Boolean = true,
-    content: @Composable () -> Unit
+    content: @Composable () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val loadingState = remember { mutableStateOf(false) }
@@ -40,14 +41,18 @@ fun SharedFlow<UiEvent>.BaseHandler(
             }
         }
     }
-    LoaderBox(loading = { loadingState.value }, content)
+    LoaderBox(loading = { loadingState.value }, modifier, content)
 }
 
 @Composable
-fun LoaderBox(loading: () -> Boolean, content: @Composable () -> Unit) {
+fun LoaderBox(
+    loading: () -> Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
     AnimatedContent(
         targetState = loading(),
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
         transitionSpec = {
             fadeIn() togetherWith fadeOut()

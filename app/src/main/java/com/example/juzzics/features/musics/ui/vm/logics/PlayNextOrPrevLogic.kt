@@ -18,7 +18,7 @@ fun MusicVM.playNextOrPrevLogic(next: Boolean) {
             if (it - 1 < 0) list.size - 1 else it - 1
         }
     }?.also {
-        onAction(MusicVM.PlayMusicAction(list[it]))
+        onAction(MusicVM.PlayMusicAction(list[it], false))
         val pos = if (next) {
             if (it == 0) 0 else it - 1
         } else {

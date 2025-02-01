@@ -17,13 +17,13 @@ import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.SECOND
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 
-fun MusicVM.playMusicLogic(musicFile: MusicFileUi?, context: Application) {
+fun MusicVM.playMusicLogic(musicFile: MusicFileUi?, context: Application, pause: Boolean = false) {
     val mediaPlayer = MEDIA_PLAYER<MediaPlayer>()
     val musicList = MUSIC_LIST<ImmutableList<MusicFileUi>>()
     val clickedMusic = CLICKED_MUSIC<MusicFileUi>()
     fun onSameMusicCLicked() {
-        if (mediaPlayer?.isPlaying == true) {
-            mediaPlayer.pause()
+        if (mediaPlayer?.isPlaying == true || pause) {
+            mediaPlayer?.pause()
             IS_PLAYING(false)
         } else {
             mediaPlayer?.start()
@@ -52,17 +52,9 @@ fun MusicVM.playMusicLogic(musicFile: MusicFileUi?, context: Application) {
         }
     }
 
-    fun playMusicSceneUpdate(music: MusicFileUi) {
-        val notPlaying = MusicVM.SCENE_NAME<String>() == FIRST
-        val newMusic = music.id != CLICKED_MUSIC<MusicFileUi>()?.id && !music.isPlaying
-        val sameMusic = music.id == CLICKED_MUSIC<MusicFileUi>()?.id
-        (if (notPlaying || newMusic || sameMusic) SECOND else FIRST) saveIn SCENE_NAME
-    }
-
     if (musicFile?.id == clickedMusic?.id) {
         onSameMusicCLicked()
     } else {
         onNewMusicClicked()
     }
-    musicFile?.let { playMusicSceneUpdate(it) }
 }
