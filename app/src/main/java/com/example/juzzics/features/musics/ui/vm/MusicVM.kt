@@ -6,12 +6,15 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.example.juzzics.common.base.extensions.mapList
 import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseViewModel
-import com.example.juzzics.common.base.viewModel.UiEvent
 import com.example.juzzics.common.base.viewModel.State
+import com.example.juzzics.common.base.viewModel.UiEvent
 import com.example.juzzics.features.musics.domain.usecases.GetAllLocalMusicFilesUseCase
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.model.toUi
-import com.example.juzzics.features.musics.ui.vm.logics.findLyrics
+import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FIRST
+import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.SECOND
+import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.THIRD
+import com.example.juzzics.features.musics.ui.vm.logics.findLyricsSceneUpdate
 import com.example.juzzics.features.musics.ui.vm.logics.onDragEnd
 import com.example.juzzics.features.musics.ui.vm.logics.playMusicLogic
 import com.example.juzzics.features.musics.ui.vm.logics.playNextOrPrevLogic
@@ -29,7 +32,7 @@ class MusicVM(
         CLICKED_MUSIC to State<MusicFileUi>(),
         IS_PLAYING to State(false),
         SCROLL_POSITION to State(0),
-        SCENE_NAME to State("0"),
+        SCENE_NAME to State(FIRST),
     )
 ) {
     companion object {
@@ -39,6 +42,17 @@ class MusicVM(
         const val IS_PLAYING = "isPlaying"
         const val SCROLL_POSITION = "Scroll_POSISION"
         const val SCENE_NAME = "sceneName"
+    }
+
+    object MotionScenes {
+        const val FIRST = "0"
+        const val SECOND = "1"
+        const val THIRD = "2"
+        const val FORTH = "3"
+    }
+
+    fun imageOrBoxClickSceneUpdate() {
+        (if (SCENE_NAME<String>() == SECOND) THIRD else SECOND) saveIn SCENE_NAME
     }
 
     init {
@@ -53,8 +67,10 @@ class MusicVM(
             is SeekToAction -> seekTo(action.position)
             is PlayOrPauseAction -> playMusicLogic(CLICKED_MUSIC(), context)
             is OnDragEndAction -> onDragEnd(action.list)
-            is FindLyricsAction -> findLyrics()
+            is FindLyricsClickedAction -> findLyricsSceneUpdate()
             is UpdateSceneAction -> SCENE_NAME(action.scene)
+            is ImageClickAction -> imageOrBoxClickSceneUpdate()
+            is BoxClickAction -> imageOrBoxClickSceneUpdate()
         }
     }
 
@@ -63,7 +79,9 @@ class MusicVM(
     object PlayNextAction : Action
     object PlayPrevAction : Action
     object PlayOrPauseAction : Action
-    object FindLyricsAction : Action
+    object FindLyricsClickedAction : Action
+    object ImageClickAction : Action
+    object BoxClickAction : Action
     data class UpdateSceneAction(val scene: String) : Action
     data class OnDragEndAction(val list: SnapshotStateList<MusicFileUi>) : Action
     data class ScrollToPositionUiEvent(val position: Int) : UiEvent

@@ -47,6 +47,7 @@ import com.example.juzzics.common.uiComponents.SimpleFAB
 import com.example.juzzics.common.uiComponents.dragable.ReorderableList
 import com.example.juzzics.features.musics.ui.components.MusicListItem
 import com.example.juzzics.features.musics.ui.components.MusicProgress
+import com.example.juzzics.features.musics.ui.components.motionScene
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.vm.MusicVM
 import kotlinx.collections.immutable.ImmutableList
@@ -75,178 +76,7 @@ fun MusicsScreen(
                 }
 
                 MotionLayout(
-                    motionScene = MotionScene {
-                        val musicList = createRefFor("music_list")
-                        val box = createRefFor("box")
-                        val nowPlaying = createRefFor("now_playing")
-                        val musicName = createRefFor("music_name")
-                        val icon = createRefFor("icon")
-                        val musicProgress = createRefFor("music_progress")
-                        val btPrev = createRefFor("bt_prev")
-                        val btNext = createRefFor("bt_next")
-                        val playOrStop = createRefFor("play_or_stop")
-                        val findLyrics = createRefFor("find_lyrics")
-                        val allViews = listOf(
-                            musicList, box, nowPlaying, musicName, icon, musicProgress,
-                            btPrev, btNext, playOrStop, findLyrics
-                        )
-
-                        val firstSet = constraintSet("0") {
-                            constrain(musicList) {
-                                start.linkTo(parent.start, 16.dp)
-                                end.linkTo(parent.end, 16.dp)
-                                top.linkTo(parent.top, 16.dp)
-                                height = Dimension.fillToConstraints
-                            }
-                            listOf(
-                                box, nowPlaying, playOrStop, musicName, icon,
-                                btPrev, btNext, musicProgress, findLyrics
-                            ).forEach {
-                                constrain(it) {
-                                    top.linkTo(parent.bottom)
-                                    centerHorizontallyTo(parent)
-                                }
-                            }
-                        }
-                        val secondSet = constraintSet("1") {
-                            constrain(musicList) {
-                                start.linkTo(parent.start, 16.dp)
-                                end.linkTo(parent.end, 16.dp)
-                                top.linkTo(parent.top, 16.dp)
-                                height = Dimension.percent(0.9f)
-                            }
-                            constrain(box) {
-                                width = Dimension.fillToConstraints
-                                height = Dimension.fillToConstraints
-                                start.linkTo(parent.start)
-                                end.linkTo(parent.end)
-                                top.linkTo(musicList.bottom)
-                                bottom.linkTo(parent.bottom)
-                            }
-                            constrain(nowPlaying) {
-                                top.linkTo(box.top, 16.dp)
-                                start.linkTo(icon.end)
-                            }
-                            constrain(playOrStop) {
-                                end.linkTo(parent.end, 16.dp)
-                                top.linkTo(box.top, 16.dp)
-                                bottom.linkTo(parent.bottom, 16.dp)
-                            }
-                            constrain(musicName) {
-                                height = Dimension.wrapContent
-                                width = Dimension.fillToConstraints
-                                start.linkTo(nowPlaying.start)
-                                end.linkTo(playOrStop.start, (-16).dp)
-                                top.linkTo(nowPlaying.bottom)
-                                bottom.linkTo(parent.bottom, 16.dp)
-                            }
-                            constrain(icon) {
-                                width = Dimension.wrapContent
-                                height = Dimension.fillToConstraints
-                                top.linkTo(box.top, 16.dp)
-                                start.linkTo(parent.start, 16.dp)
-                                bottom.linkTo(box.bottom, 16.dp)
-                            }
-                            constrain(btPrev) {
-                                alpha = 0f
-                                start.linkTo(playOrStop.start)
-                                end.linkTo(parent.end)
-                                top.linkTo(box.top, 16.dp)
-                                bottom.linkTo(parent.bottom, 16.dp)
-                            }
-                            constrain(btNext) {
-                                alpha = 0f
-                                start.linkTo(playOrStop.start)
-                                end.linkTo(parent.end)
-                                top.linkTo(box.top, 16.dp)
-                                bottom.linkTo(parent.bottom, 16.dp)
-                            }
-                            constrain(musicProgress) {
-                                width = Dimension.fillToConstraints
-                                bottom.linkTo(parent.bottom, 8.dp)
-                                start.linkTo(parent.start, 16.dp)
-                                end.linkTo(musicName.end, 16.dp)
-                            }
-                            constrain(findLyrics) {
-                                top.linkTo(parent.bottom)
-                                centerHorizontallyTo(parent)
-                            }
-                        }
-
-                        constraintSet("2") {
-                            constrain(musicList) {
-                                start.linkTo(parent.start, 16.dp)
-                                end.linkTo(parent.end, 16.dp)
-                                top.linkTo(parent.top, 16.dp)
-                            }
-                            constrain(box) {
-                                width = Dimension.fillToConstraints
-                                height = Dimension.fillToConstraints
-                                start.linkTo(parent.start)
-                                end.linkTo(parent.end)
-                                top.linkTo(parent.top)
-                                bottom.linkTo(parent.bottom, (-16).dp)
-                            }
-                            constrain(nowPlaying) {
-                                start.linkTo(parent.start, 16.dp)
-                                top.linkTo(parent.top, 16.dp)
-                            }
-                            constrain(playOrStop) {
-                                start.linkTo(parent.start)
-                                end.linkTo(parent.end)
-                                bottom.linkTo(parent.bottom, 100.dp)
-                            }
-                            constrain(musicName) {
-                                height = Dimension.wrapContent
-                                width = Dimension.fillToConstraints
-                                start.linkTo(icon.start)
-                                end.linkTo(icon.end)
-                                bottom.linkTo(playOrStop.top, 32.dp)
-                            }
-                            constrain(icon) {
-                                width = Dimension.fillToConstraints
-                                height = Dimension.fillToConstraints
-                                top.linkTo(parent.top, 100.dp)
-                                start.linkTo(parent.start)
-                                end.linkTo(parent.end)
-                                bottom.linkTo(musicName.top)
-                            }
-                            constrain(btPrev) {
-                                end.linkTo(playOrStop.start, 32.dp)
-                                top.linkTo(playOrStop.top)
-                                bottom.linkTo(playOrStop.bottom)
-                            }
-                            constrain(btNext) {
-                                start.linkTo(playOrStop.end, 32.dp)
-                                top.linkTo(playOrStop.top)
-                                bottom.linkTo(playOrStop.bottom)
-                            }
-                            constrain(musicProgress) {
-                                width = Dimension.fillToConstraints
-                                height = Dimension.value(10.dp)
-                                bottom.linkTo(musicName.top, 32.dp)
-                                start.linkTo(parent.start, 32.dp)
-                                end.linkTo(parent.end, 32.dp)
-                            }
-                            constrain(findLyrics) {
-                                bottom.linkTo(parent.bottom, 16.dp)
-                                centerHorizontallyTo(parent)
-                            }
-                        }
-                        constraintSet("3") {
-                            constrain(findLyrics) {
-                                top.linkTo(parent.top, 32.dp)
-                                centerHorizontallyTo(parent)
-                            }
-                            allViews.filterNot { it == findLyrics }.forEach {
-                                constrain(it) {
-                                    bottom.linkTo(parent.top)
-                                    centerHorizontallyTo(parent)
-                                }
-                            }
-                        }
-                        defaultTransition(firstSet, secondSet)
-                    },
+                    motionScene = motionScene,
                     constraintSetName = SCENE_NAME(),
                     animationSpec = tween(800),
                     modifier = Modifier
@@ -258,21 +88,13 @@ fun MusicsScreen(
                     val isPlaying = IS_PLAYING() ?: false
                     val list = MUSIC_LIST<ImmutableList<MusicFileUi>>()?.toMutableStateList()
                         ?: remember { mutableStateListOf() }
-                    val scene = SCENE_NAME<String>()
 
                     ReorderableList(
                         modifier = Modifier.layoutId("music_list"),
                         list = list,
                         lazyListState = lazyListState,
                         onDragEnd = { onAction(MusicVM.OnDragEndAction(it)) },
-                        onClick = {
-                            onAction(MusicVM.PlayMusicAction(it))
-                            val newScene = if (scene == "0"
-                                || (it.id != clickedMusic?.id && !it.isPlaying)
-                                || it.id == clickedMusic?.id
-                            ) "1" else "0"
-                            onAction(MusicVM.UpdateSceneAction(newScene))
-                        }
+                        onClick = { onAction(MusicVM.PlayMusicAction(it)) }
                     ) {
                         MusicListItem(it)
                     }
@@ -281,13 +103,7 @@ fun MusicsScreen(
                             .fillMaxWidth()
                             .background(MaterialTheme.colorScheme.secondaryContainer)
                             .layoutId("box")
-                            .clickable {
-                                onAction(
-                                    MusicVM.UpdateSceneAction(
-                                        (if (scene == "1") "2" else "1")
-                                    )
-                                )
-                            }
+                            .clickable { onAction(MusicVM.BoxClickAction) }
                     )
                     Text(
                         text = "Now Playing:",
@@ -317,10 +133,7 @@ fun MusicsScreen(
                                 1f,
                                 true
                             )
-                            .clickable {
-                                val newScene = if (scene == "1") "2" else "1"
-                                onAction(MusicVM.UpdateSceneAction(newScene))
-                            },
+                            .clickable { onAction(MusicVM.ImageClickAction) },
                         contentScale = ContentScale.Fit,
                     )
                     MusicProgress(
@@ -349,11 +162,7 @@ fun MusicsScreen(
                     Text(
                         modifier = Modifier
                             .layoutId("find_lyrics")
-                            .clickable {
-                                onAction(MusicVM.FindLyricsAction)
-                                val newScene = if (scene == "2") "3" else "2"
-                                onAction(MusicVM.UpdateSceneAction(newScene))
-                            },
+                            .clickable { onAction(MusicVM.FindLyricsClickedAction) },
                         text = "Find Lyrics"
                     )
                 }

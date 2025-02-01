@@ -6,10 +6,14 @@ import android.media.MediaPlayer
 import android.provider.MediaStore
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.vm.MusicVM
+import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.CLICKED_MUSIC
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.IS_PLAYING
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.MEDIA_PLAYER
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.MUSIC_LIST
+import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.SCENE_NAME
+import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FIRST
+import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.SECOND
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 
@@ -47,9 +51,18 @@ fun MusicVM.playMusicLogic(musicFile: MusicFileUi?, context: Application) {
             }
         }
     }
+
+    fun playMusicSceneUpdate(music: MusicFileUi) {
+        val notPlaying = MusicVM.SCENE_NAME<String>() == FIRST
+        val newMusic = music.id != CLICKED_MUSIC<MusicFileUi>()?.id && !music.isPlaying
+        val sameMusic = music.id == CLICKED_MUSIC<MusicFileUi>()?.id
+        (if (notPlaying || newMusic || sameMusic) SECOND else FIRST) saveIn SCENE_NAME
+    }
+
     if (musicFile?.id == clickedMusic?.id) {
         onSameMusicCLicked()
     } else {
         onNewMusicClicked()
     }
+    musicFile?.let { playMusicSceneUpdate(it) }
 }
