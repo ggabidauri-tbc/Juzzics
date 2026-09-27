@@ -1,5 +1,6 @@
 package com.example.juzzics.common.base.viewModel
 
+import com.example.juzzics.common.messages.AppMessages
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
@@ -85,10 +86,11 @@ abstract class BaseViewModel(keys: List<StateKey<*>>) : ViewModel() {
         e.printStackTrace()
         if (!emitErrorMsgAction) return
         val msg = when (e) {
-            is IOException -> e.message ?: "network Error"
-            else -> e.message ?: "some error occurred"
+            is IOException -> "No connection. Check the internet and try again."
+            else -> e.message ?: "Something went wrong"
         }
-        UiEvent.Message(msg).emit()
+        // shown app-wide (a snackbar), whichever screen is open
+        AppMessages.show(msg)
     }
 
     /** saves a successful [response] in [key]; on failure keeps the old value and emits the error message. */

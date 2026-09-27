@@ -6,77 +6,48 @@ import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseViewModel
 import com.example.juzzics.common.base.viewModel.StateKey
 import com.example.juzzics.common.base.viewModel.UiEvent
+import com.example.juzzics.common.messages.AppMessages
 import com.example.juzzics.common.songs.SongSettings
-import com.example.juzzics.features.lyrics.domain.model.LyricsDomain
-import com.example.juzzics.features.lyrics.domain.model.LyricsCandidate
-import com.example.juzzics.features.lyrics.domain.usecase.FindLyricsUseCase
-import com.example.juzzics.features.lyrics.domain.usecase.SearchLyricsUseCase
-import com.example.juzzics.features.lyrics.domain.usecase.ObserveSavedLyricsUseCase
-import com.example.juzzics.features.lyrics.domain.usecase.SaveLyricsUseCase
 import com.example.juzzics.features.musics.domain.usecases.GetAllLocalMusicFilesUseCase
 import com.example.juzzics.features.musics.domain.usecases.SaveSongOrderUseCase
 import com.example.juzzics.features.musics.ui.model.BrowseTab
-import com.example.juzzics.features.musics.ui.model.toDomain
-import com.example.juzzics.features.playlists.domain.usecase.ObserveLikedSongIdsUseCase
-import com.example.juzzics.features.playlists.domain.usecase.ToggleLikeUseCase
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.model.SongSort
+import com.example.juzzics.features.musics.ui.model.toDomain
 import com.example.juzzics.features.musics.ui.model.toUi
-import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FIRST
-import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FOURTH
-import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.THIRD
-import com.example.juzzics.features.musics.ui.vm.logics.arrowClick
-import com.example.juzzics.features.musics.ui.vm.logics.fetchLyrics
-import com.example.juzzics.features.musics.ui.vm.logics.findLyricsSceneUpdate
-import com.example.juzzics.features.musics.ui.vm.logics.lookUpLyricsIfMissing
 import com.example.juzzics.features.musics.ui.vm.logics.markPlaying
 import com.example.juzzics.features.musics.ui.vm.logics.observePlayer
 import com.example.juzzics.features.musics.ui.vm.logics.onDragEnd
 import com.example.juzzics.features.musics.ui.vm.logics.playMusic
-import com.example.juzzics.features.musics.ui.vm.logics.tieLyrics
-import com.example.juzzics.features.player.PlaybackProgress
 import com.example.juzzics.features.player.PlayerController
-import com.example.juzzics.features.player.RepeatMode
+import com.example.juzzics.features.playlists.domain.usecase.ObserveLikedSongIdsUseCase
+import com.example.juzzics.features.playlists.domain.usecase.ToggleLikeUseCase
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.flow.drop
 
-
+/**
+ * The Library tab: all songs (your own drag-to-reorder order), search, sort, albums and
+ * artists. The player itself is [com.example.juzzics.features.player.ui.vm.PlayerVM].
+ */
 class MusicVM(
     private val getAllLocalMusicFilesUseCase: GetAllLocalMusicFilesUseCase,
-    val findLyricsUseCase: FindLyricsUseCase,
-    val searchLyricsUseCase: SearchLyricsUseCase,
-    val observeSavedLyricsUseCase: ObserveSavedLyricsUseCase,
-    val saveLyricsUseCase: SaveLyricsUseCase,
     val saveSongOrderUseCase: SaveSongOrderUseCase,
     observeLikedSongIdsUseCase: ObserveLikedSongIdsUseCase,
-    val toggleLikeUseCase: ToggleLikeUseCase,
+    private val toggleLikeUseCase: ToggleLikeUseCase,
     val player: PlayerController,
-    val songSettings: SongSettings,
+    songSettings: SongSettings,
 ) : BaseViewModel(
     listOf(
-        MUSIC_LIST, CLICKED_MUSIC, IS_PLAYING, SCENE_NAME,
-        LYRICS, LYRICS_CANDIDATES, LYRICS_STATUS, ARTIST, TITLE,
-        SEARCH_QUERY, SORT, BROWSE_TAB, BROWSE_GROUP, LIKED_IDS, PLAYING_FROM,
-        SHUFFLE, REPEAT, QUEUE, QUEUE_INDEX, SHOW_QUEUE, PROGRESS, LYRICS_OFFSETS,
+        MUSIC_LIST, CURRENT_ID, SEARCH_QUERY, SORT, BROWSE_TAB, BROWSE_GROUP,
+        LIKED_IDS, PLAYING_FROM, QUEUE, QUEUE_INDEX,
     )
 ) {
     companion object {
         /** all songs, in your own (drag-to-reorder) order */
         val MUSIC_LIST = StateKey<ImmutableList<MusicFileUi>>("musicList", persistentListOf())
-        /** the player's current song, with its saved lyrics */
-        val CLICKED_MUSIC = StateKey<MusicFileUi?>("clickedMusic", null)
-        val IS_PLAYING = StateKey("isPlaying", false)
-        val SCENE_NAME = StateKey("sceneName", FIRST)
-
-        /** lyrics picked on the search lyrics screen (shown, can be tied to the song) */
-        val LYRICS = StateKey<LyricsDomain?>("lyrics", null)
-        /** results of the manual lyrics search, best first */
-        val LYRICS_CANDIDATES = StateKey<List<LyricsCandidate>>("lyricsCandidates", emptyList())
-        /** message on the lyrics screen while looking lyrics up automatically */
-        val LYRICS_STATUS = StateKey("lyricsStatus", "")
-        val ARTIST = StateKey("artist", "")
-        val TITLE = StateKey("title", "")
+        /** the song playing (highlighted in the list) */
+        val CURRENT_ID = StateKey<Long?>("currentId", null)
 
         val SEARCH_QUERY = StateKey("searchQuery", "")
         val SORT = StateKey("sort", SongSort.CUSTOM)
@@ -88,35 +59,18 @@ class MusicVM(
         /** songs with a heart */
         val LIKED_IDS = StateKey<Set<Long>>("likedIds", emptySet())
 
-        val SHUFFLE = StateKey("shuffle", false)
-        val REPEAT = StateKey("repeat", RepeatMode.OFF)
+        /** the play queue (shown instead of all songs while [PLAYING_FROM] is set) */
         val QUEUE = StateKey<ImmutableList<MusicFileUi>>("queue", persistentListOf())
         val QUEUE_INDEX = StateKey("queueIndex", -1)
-        val SHOW_QUEUE = StateKey("showQueue", false)
-        val PROGRESS = StateKey("progress", PlaybackProgress())
-        /** song id to how much its synced lyrics are shifted (ms) */
-        val LYRICS_OFFSETS = StateKey<Map<Long, Long>>("lyricsOffsets", emptyMap())
-    }
-
-    object MotionScenes {
-        const val FIRST = "1"
-        const val SECOND = "2"
-        const val THIRD = "3"
-        const val FOURTH = "4"
-        const val FIFTH = "5"
     }
 
     /** song the user tapped last, so the list doesn't auto-scroll to it */
     internal var lastTappedSongId: Long? = null
 
-    /** songs whose lyrics were already looked up automatically */
-    internal val autoLyricsTried = mutableSetOf<Long>()
-
     init {
         loadSongs()
         observePlayer()
         observeLikedSongIdsUseCase().collectIn(LIKED_IDS)
-        songSettings.lyricsOffsets.collectIn(LYRICS_OFFSETS)
         // a song was renamed (Home > Fix song names): show the new names
         launch(emitLoadingAction = false) {
             songSettings.names.drop(1).collect { loadSongs() }
@@ -125,27 +79,28 @@ class MusicVM(
 
     private fun loadSongs() = launch {
         call(getAllLocalMusicFilesUseCase().mapList { it.toUi() }, MUSIC_LIST)
-        MUSIC_LIST(MUSIC_LIST().markPlaying(CLICKED_MUSIC()?.id))
+        MUSIC_LIST(MUSIC_LIST().markPlaying(CURRENT_ID()))
     }
 
     override fun onAction(action: Action) {
         when (action) {
-            is PlayMusicAction -> playMusic(action.music, action.updateScene)
-            is PlayNextAction -> player.next()
-            is PlayPrevAction -> player.previous()
-            is SeekToAction -> player.seekTo(action.position)
-            is SeekToMsAction -> player.seekToMs(action.positionMs)
-            is PlayOrPauseAction -> if (action.pause) player.pause() else player.togglePlayPause()
-            is ToggleShuffleAction -> player.toggleShuffle()
-            is CycleRepeatAction -> player.cycleRepeatMode()
-            is ShowQueueAction -> SHOW_QUEUE(action.show)
+            is PlayMusicAction -> playMusic(action.music)
             is PlayQueueIndexAction -> player.playQueueIndex(action.index)
-            is PlayNextAfterCurrentAction -> player.playNext(action.song.toDomain())
-            is AddToQueueAction -> player.addToQueue(action.song.toDomain())
+            is PlayNextAfterCurrentAction -> {
+                player.playNext(action.song.toDomain())
+                AppMessages.show("Plays next: ${action.song.title.orEmpty()}")
+            }
+            is AddToQueueAction -> {
+                player.addToQueue(action.song.toDomain())
+                AppMessages.show("Added to the queue")
+            }
             is ReorderQueueAction -> player.reorderQueue(action.songIds)
-            is RemoveFromQueueAction -> player.removeFromQueue(action.index)
-            is ToggleLikeAction -> launch(emitLoadingAction = false, emitErrorMsgAction = true) {
-                toggleLikeUseCase(action.song.toDomain()).getOrThrow()
+            is ToggleLikeAction -> {
+                val liked = action.song.id in LIKED_IDS()
+                launch(emitLoadingAction = false, emitErrorMsgAction = true) {
+                    toggleLikeUseCase(action.song.toDomain()).getOrThrow()
+                    AppMessages.show(if (liked) "Removed from Liked songs" else "Added to Liked songs")
+                }
             }
 
             is OnDragEndAction -> onDragEnd(action.list)
@@ -157,50 +112,15 @@ class MusicVM(
             }
             is OpenGroupAction -> BROWSE_GROUP(action.name)
             is ShowAllSongsAction -> PLAYING_FROM(null)
-
-            is FindLyricsClickedAction -> findLyricsSceneUpdate()
-            is UpdateSceneAction -> SCENE_NAME(action.scene)
-            is ArrowDownClickAction -> arrowClick()
-            is BoxClickAction -> SCENE_NAME(THIRD)
-            is FetchLyricsAction -> fetchLyrics()
-            is PickLyricsAction -> LYRICS(LYRICS_CANDIDATES().getOrNull(action.index)?.lyrics)
-            is BackToLyricsResultsAction -> LYRICS(null)
-            is UpdateArtistAction -> ARTIST(action.value)
-            is UpdateTitleAction -> TITLE(action.value)
-            is TieLyrics -> tieLyrics()
-            is ShiftLyricsAction -> CLICKED_MUSIC()?.id?.let { id ->
-                val offset = (LYRICS_OFFSETS()[id] ?: 0L) + action.deltaMs
-                songSettings.setLyricsOffset(id, offset.coerceIn(-10_000L, 10_000L))
-            }
         }
-        // opening the lyrics screen looks lyrics up if the song has none yet
-        if (!SCENE_NAME == FOURTH) lookUpLyricsIfMissing()
     }
 
-    data object FetchLyricsAction : Action
-    /** synced lyrics of the current song run early (negative) or late (positive): shift them */
-    data class ShiftLyricsAction(val deltaMs: Long) : Action
-    /** picks one of [LYRICS_CANDIDATES] */
-    data class PickLyricsAction(val index: Int) : Action
-    data object BackToLyricsResultsAction : Action
-    data class UpdateArtistAction(val value: String) : Action
-    data class UpdateTitleAction(val value: String) : Action
-
-    data class PlayMusicAction(val music: MusicFileUi, val updateScene: Boolean = true) : Action
-    data class SeekToAction(val position: Float) : Action
-    data object PlayNextAction : Action
-    data object PlayPrevAction : Action
-    data class PlayOrPauseAction(val pause: Boolean = false) : Action
-    data object ToggleShuffleAction : Action
-    data object CycleRepeatAction : Action
-    data class ShowQueueAction(val show: Boolean) : Action
+    data class PlayMusicAction(val music: MusicFileUi) : Action
     data class PlayQueueIndexAction(val index: Int) : Action
-    data class SeekToMsAction(val positionMs: Long) : Action
     /** "Play next" from a song's menu */
     data class PlayNextAfterCurrentAction(val song: MusicFileUi) : Action
     data class AddToQueueAction(val song: MusicFileUi) : Action
     data class ReorderQueueAction(val songIds: List<Long>) : Action
-    data class RemoveFromQueueAction(val index: Int) : Action
     data class ToggleLikeAction(val song: MusicFileUi) : Action
 
     data class SearchAction(val query: String) : Action
@@ -211,11 +131,6 @@ class MusicVM(
     /** null closes the opened album/artist */
     data class OpenGroupAction(val name: String?) : Action
 
-    data object FindLyricsClickedAction : Action
-    data object BoxClickAction : Action
-    data object ArrowDownClickAction : Action
-    data object TieLyrics : Action
-    data class UpdateSceneAction(val scene: String) : Action
     data class OnDragEndAction(val list: SnapshotStateList<MusicFileUi>) : Action
     data class ScrollToPositionUiEvent(val position: Int) : UiEvent
 }

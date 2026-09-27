@@ -7,8 +7,8 @@ enum class SongSort(val label: String) {
     RECENTLY_ADDED("Recently added"),
 }
 
-/** What the song list browses: all songs, or albums / artists (then the songs of one). */
-enum class BrowseTab(val label: String) { SONGS("Songs"), ALBUMS("Albums"), ARTISTS("Artists") }
+/** What the Library shows: all songs, albums / artists (then the songs of one), or playlists. */
+enum class BrowseTab(val label: String) { SONGS("Songs"), ALBUMS("Albums"), ARTISTS("Artists"), PLAYLISTS("Playlists") }
 
 val MusicFileUi.albumName: String get() = data?.takeUnless { it.isBlank() || it == "<unknown>" } ?: "Unknown album"
 val MusicFileUi.artistName: String get() = knownArtist.ifEmpty { "Unknown artist" }

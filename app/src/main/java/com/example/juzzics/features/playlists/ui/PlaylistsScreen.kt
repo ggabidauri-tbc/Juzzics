@@ -1,43 +1,45 @@
 package com.example.juzzics.features.playlists.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,118 +50,81 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.juzzics.common.base.BaseHandler
 import com.example.juzzics.common.base.extensions.with2
 import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseState
-import com.example.juzzics.common.base.viewModel.LOADING
-import com.example.juzzics.common.base.viewModel.UiEvent
 import com.example.juzzics.common.base.viewModel.invoke
 import com.example.juzzics.common.base.viewModel.not
+import com.example.juzzics.common.uiComponents.ArtworkImage
 import com.example.juzzics.common.uiComponents.EmptyState
+import com.example.juzzics.common.uiComponents.PageHeader
+import com.example.juzzics.common.uiComponents.SongRow
 import com.example.juzzics.common.uiComponents.dragable.ReorderableList
-import com.example.juzzics.features.musics.ui.model.knownArtist
+import com.example.juzzics.features.musics.ui.components.toClock
+import com.example.juzzics.features.musics.ui.model.artistName
 import com.example.juzzics.features.musics.ui.model.toUi
 import com.example.juzzics.features.playlists.domain.model.PlaylistDomain
 import com.example.juzzics.features.playlists.ui.vm.PlaylistsVM
-import kotlinx.coroutines.flow.Flow
 
+/**
+ * The Library's Playlists tab: your playlists (Liked songs first) and, when one is open, its
+ * songs. Starting playback shows the mini player.
+ */
 @Composable
-fun PlaylistsScreen(
+fun PlaylistsContent(
     states: BaseState,
-    uiEvent: Flow<UiEvent>,
     onAction: (Action) -> Unit,
-    /** called after starting playback, to show the player */
-    onOpenPlayer: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     with2(first = states, second = PlaylistsVM) {
         val playlists = PLAYLIST_LIST()
         // look the selected playlist up in the (live) list, so edits show right away
         val selectedPlaylist = SELECTED_PLAYLIST_ID()?.let { id -> playlists.find { it.id == id } }
 
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            uiEvent.BaseHandler(
-                loading = LOADING(),
-                content = {
-                    Scaffold(
-                        floatingActionButton = {
-                            if (selectedPlaylist == null) {
-                                FloatingActionButton(
-                                    onClick = { onAction(PlaylistsVM.ToggleCreateDialogAction(true)) }
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = "Create Playlist")
-                                }
-                            }
-                        }
-                    ) { padding ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(padding)
-                        ) {
-                            if (selectedPlaylist != null) {
-                                BackHandler { onAction(PlaylistsVM.SelectPlaylistAction(null)) }
-                                PlaylistDetailView(
-                                    playlist = selectedPlaylist,
-                                    onAction = onAction,
-                                    onOpenPlayer = onOpenPlayer,
-                                )
-                            } else {
-                                PlaylistListView(
-                                    playlists = playlists,
-                                    onSelectPlaylist = { playlist ->
-                                        onAction(PlaylistsVM.SelectPlaylistAction(playlist.id))
-                                    }
-                                )
-                            }
-                        }
-                    }
+        Box(modifier.fillMaxSize()) {
+            if (selectedPlaylist != null) {
+                BackHandler { onAction(PlaylistsVM.SelectPlaylistAction(null)) }
+                PlaylistDetail(playlist = selectedPlaylist, onAction = onAction)
+            } else {
+                PlaylistList(
+                    playlists = playlists,
+                    onCreate = { onAction(PlaylistsVM.ToggleCreateDialogAction(true)) },
+                    onOpen = { onAction(PlaylistsVM.SelectPlaylistAction(it.id)) },
+                )
+            }
+        }
 
-                    if (SHOW_CREATE_DIALOG()) {
-                        NameDialog(
-                            title = "Create Playlist",
-                            name = !NEW_PLAYLIST_NAME,
-                            onNameChange = { onAction(PlaylistsVM.UpdateNewPlaylistNameAction(it)) },
-                            confirmText = "Create",
-                            placeholder = "Leave empty for default name",
-                            onConfirm = { onAction(PlaylistsVM.CreatePlaylistAction()) },
-                            onDismiss = { onAction(PlaylistsVM.ToggleCreateDialogAction(false)) },
-                        )
-                    }
-
-                    if (SHOW_RENAME_DIALOG() && selectedPlaylist != null) {
-                        var newName by remember(selectedPlaylist.id) { mutableStateOf(selectedPlaylist.name) }
-                        NameDialog(
-                            title = "Rename Playlist",
-                            name = newName,
-                            onNameChange = { newName = it },
-                            confirmText = "Rename",
-                            placeholder = "Playlist name",
-                            onConfirm = { onAction(PlaylistsVM.RenamePlaylistAction(newName)) },
-                            onDismiss = { onAction(PlaylistsVM.ShowRenameDialogAction(false)) },
-                        )
-                    }
-
-                    if (SHOW_DELETE_DIALOG() && selectedPlaylist != null) {
-                        AlertDialog(
-                            onDismissRequest = { onAction(PlaylistsVM.ShowDeleteDialogAction(false)) },
-                            title = { Text("Delete \"${selectedPlaylist.name}\"?") },
-                            text = { Text("The songs stay on your device, only the playlist is deleted.") },
-                            confirmButton = {
-                                Button(onClick = { onAction(PlaylistsVM.DeletePlaylistAction) }) {
-                                    Text("Delete")
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { onAction(PlaylistsVM.ShowDeleteDialogAction(false)) }) {
-                                    Text("Cancel")
-                                }
-                            }
-                        )
-                    }
+        if (SHOW_CREATE_DIALOG()) {
+            NameDialog(
+                title = "New playlist",
+                name = !NEW_PLAYLIST_NAME,
+                onNameChange = { onAction(PlaylistsVM.UpdateNewPlaylistNameAction(it)) },
+                confirmText = "Create",
+                onConfirm = { onAction(PlaylistsVM.CreatePlaylistAction()) },
+                onDismiss = { onAction(PlaylistsVM.ToggleCreateDialogAction(false)) },
+            )
+        }
+        if (SHOW_RENAME_DIALOG() && selectedPlaylist != null) {
+            var newName by remember(selectedPlaylist.id) { mutableStateOf(selectedPlaylist.name) }
+            NameDialog(
+                title = "Rename playlist",
+                name = newName,
+                onNameChange = { newName = it },
+                confirmText = "Rename",
+                onConfirm = { onAction(PlaylistsVM.RenamePlaylistAction(newName)) },
+                onDismiss = { onAction(PlaylistsVM.ShowRenameDialogAction(false)) },
+            )
+        }
+        if (SHOW_DELETE_DIALOG() && selectedPlaylist != null) {
+            AlertDialog(
+                onDismissRequest = { onAction(PlaylistsVM.ShowDeleteDialogAction(false)) },
+                title = { Text("Delete \"${selectedPlaylist.name}\"?") },
+                text = { Text("The songs stay on your phone, only the playlist goes.") },
+                confirmButton = {
+                    Button(onClick = { onAction(PlaylistsVM.DeletePlaylistAction) }) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { onAction(PlaylistsVM.ShowDeleteDialogAction(false)) }) { Text("Cancel") }
                 }
             )
         }
@@ -167,172 +132,169 @@ fun PlaylistsScreen(
 }
 
 @Composable
-private fun NameDialog(
-    title: String,
-    name: String,
-    onNameChange: (String) -> Unit,
-    confirmText: String,
-    placeholder: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit,
+private fun PlaylistList(
+    playlists: List<PlaylistDomain>,
+    onCreate: () -> Unit,
+    onOpen: (PlaylistDomain) -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column {
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = onNameChange,
-                    label = { Text("Playlist Name") },
-                    placeholder = { Text(placeholder) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+    LazyColumn(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onCreate)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                Text("New playlist", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 16.dp))
+            }
+        }
+        items(playlists, key = { it.id }) { playlist ->
+            PlaylistRow(playlist, onClick = { onOpen(playlist) })
+        }
+        if (playlists.none { !it.isLikedSongs }) {
+            item {
+                Text(
+                    "Make playlists for trips, workouts, late nights… Add songs from a song's ⋮ menu.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)
                 )
             }
-        },
-        confirmButton = { Button(onClick = onConfirm) { Text(confirmText) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+        }
+    }
 }
 
 @Composable
-private fun PlaylistListView(
-    playlists: List<PlaylistDomain>,
-    onSelectPlaylist: (PlaylistDomain) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+private fun PlaylistRow(playlist: PlaylistDomain, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "Playlists",
-            style = MaterialTheme.typography.headlineLarge,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
-
-        if (playlists.isEmpty()) {
-            EmptyState(
-                icon = Icons.AutoMirrored.Filled.PlaylistAdd,
-                title = "No playlists yet",
-                message = "Tap + to create one"
-            )
+        if (playlist.isLikedSongs) {
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Filled.Favorite, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
+            }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(playlists, key = { it.id }) { playlist ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelectPlaylist(playlist) },
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (playlist.isLikedSongs) {
-                                    Icon(
-                                        Icons.Default.Favorite,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.padding(end = 8.dp)
-                                    )
+            ArtworkImage(
+                songId = playlist.songs.firstOrNull()?.id,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.size(56.dp)
+            )
+        }
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(start = 16.dp)
+        ) {
+            Text(playlist.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                songCount(playlist),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private fun songCount(playlist: PlaylistDomain): String {
+    val count = playlist.songs.size
+    val minutes = playlist.songs.sumOf { it.duration } / 60_000
+    return when {
+        count == 0 -> "Empty"
+        minutes >= 60 -> "$count songs · ${minutes / 60} h ${minutes % 60} min"
+        else -> "$count song${if (count == 1) "" else "s"} · $minutes min"
+    }
+}
+
+@Composable
+private fun PlaylistDetail(
+    playlist: PlaylistDomain,
+    onAction: (Action) -> Unit,
+) {
+    fun play(startIndex: Int) = onAction(PlaylistsVM.PlayPlaylistAction(playlist.id, startIndex))
+
+    Column(Modifier.fillMaxSize()) {
+        PageHeader(
+            title = playlist.name,
+            subtitle = songCount(playlist),
+            onBack = { onAction(PlaylistsVM.SelectPlaylistAction(null)) },
+            actions = {
+                if (!playlist.isLikedSongs) {
+                    var menuOpen by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Playlist options")
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                onClick = {
+                                    menuOpen = false
+                                    onAction(PlaylistsVM.ShowRenameDialogAction(true))
                                 }
-                                Text(text = playlist.name, style = MaterialTheme.typography.titleLarge)
-                            }
-                            Text(
-                                text = "${playlist.songs.size} songs",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete playlist") },
+                                onClick = {
+                                    menuOpen = false
+                                    onAction(PlaylistsVM.ShowDeleteDialogAction(true))
+                                }
                             )
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun PlaylistDetailView(
-    playlist: PlaylistDomain,
-    onAction: (Action) -> Unit,
-    onOpenPlayer: () -> Unit,
-) {
-    fun play(startIndex: Int) {
-        onAction(PlaylistsVM.PlayPlaylistAction(playlist.id, startIndex))
-        onOpenPlayer()
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(bottom = 8.dp)
-        ) {
-            IconButton(onClick = { onAction(PlaylistsVM.SelectPlaylistAction(null)) }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-            }
-            Text(
-                text = playlist.name,
-                style = MaterialTheme.typography.headlineMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 8.dp)
-            )
-            var menuOpen by remember { mutableStateOf(false) }
-            if (!playlist.isLikedSongs) Box {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More")
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Rename") },
-                        onClick = {
-                            menuOpen = false
-                            onAction(PlaylistsVM.ShowRenameDialogAction(true))
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete playlist") },
-                        onClick = {
-                            menuOpen = false
-                            onAction(PlaylistsVM.ShowDeleteDialogAction(true))
-                        }
-                    )
-                }
-            }
-        }
+        )
 
         if (playlist.songs.isEmpty()) {
             EmptyState(
-                icon = if (playlist.isLikedSongs) Icons.Default.FavoriteBorder else Icons.AutoMirrored.Filled.PlaylistAdd,
-                title = "This playlist is empty",
-                message = if (playlist.isLikedSongs) "Tap the heart on a song to add it here"
-                else "Add songs from a song's menu in the Musics tab"
+                icon = if (playlist.isLikedSongs) Icons.Filled.FavoriteBorder else Icons.AutoMirrored.Filled.PlaylistAdd,
+                title = "Nothing here yet",
+                message = if (playlist.isLikedSongs) "Tap the heart on a song and it shows up here"
+                else "Add songs from a song's ⋮ menu, or the + in the player",
+                modifier = Modifier.weight(1f)
             )
             return@Column
         }
 
-        Button(
-            onClick = { play(0) },
-            modifier = Modifier.padding(bottom = 8.dp)
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null)
-            Text("Play", modifier = Modifier.padding(start = 4.dp))
+            Button(onClick = { play(0) }) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Text("Play", modifier = Modifier.padding(start = 6.dp))
+            }
+            FilledTonalButton(onClick = { play(playlist.songs.indices.random()) }) {
+                Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("Any song", modifier = Modifier.padding(start = 6.dp))
+            }
         }
         Text(
-            if (playlist.isLikedSongs) "Tap a song to play from it · newest likes first"
-            else "Tap a song to play from it, long-press and drag to reorder",
+            if (playlist.isLikedSongs) "Newest likes first"
+            else "Hold and drag to reorder · swipe a song away to remove it",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
         )
+        Spacer(Modifier.height(4.dp))
 
         val songs = remember(playlist.songs) { playlist.songs.map { it.toUi() }.toMutableStateList() }
         ReorderableList(
@@ -346,34 +308,65 @@ private fun PlaylistDetailView(
             },
             onClick = { song -> play(songs.indexOf(song).coerceAtLeast(0)) }
         ) { song ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            val dismiss = rememberSwipeToDismissBoxState(
+                confirmValueChange = { value ->
+                    if (value == SwipeToDismissBoxValue.Settled) false
+                    else {
+                        onAction(PlaylistsVM.RemoveSongFromPlaylistAction(playlist.id, song.id))
+                        true
+                    }
+                }
+            )
+            SwipeToDismissBox(
+                state = dismiss,
+                enableDismissFromStartToEnd = false,
+                backgroundContent = {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        Text("Remove", color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                }
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = song.title ?: "Unknown Title",
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = song.knownArtist.ifEmpty { "Unknown Artist" },
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                IconButton(onClick = {
-                    onAction(PlaylistsVM.RemoveSongFromPlaylistAction(playlist.id, song.id))
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Remove from playlist",
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                }
+                SongRow(
+                    title = song.title.orEmpty(),
+                    subtitle = song.artistName,
+                    detail = song.duration.toClock(),
+                    songId = song.id,
+                    modifier = Modifier.background(MaterialTheme.colorScheme.background)
+                )
             }
         }
     }
+}
+
+@Composable
+private fun NameDialog(
+    title: String,
+    name: String,
+    onNameChange: (String) -> Unit,
+    confirmText: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = onNameChange,
+                label = { Text("Name") },
+                placeholder = { Text("e.g. Road trip") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text(confirmText) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

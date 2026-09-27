@@ -2,7 +2,6 @@ package com.example.juzzics.features.musics.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -24,9 +23,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.juzzics.common.uiComponents.EmptyState
+import com.example.juzzics.common.uiComponents.SongRow
 import com.example.juzzics.common.uiComponents.dragable.ReorderableList
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.model.artistName
@@ -60,7 +59,7 @@ fun QueueSheet(
             return@ModalBottomSheet
         }
         Text(
-            "Long-press and drag to reorder · swipe to remove",
+            "Hold and drag to reorder · swipe a song away to remove it",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -117,25 +116,13 @@ fun QueueSheet(
 
 @Composable
 private fun QueueRow(song: MusicFileUi, isCurrent: Boolean) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(
-                if (isCurrent) MaterialTheme.colorScheme.secondaryContainer
-                else MaterialTheme.colorScheme.surfaceContainerLow
-            )
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-    ) {
-        Text(
-            song.title.orEmpty(),
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            if (isCurrent) "Playing now" else song.artistName,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+    SongRow(
+        title = song.title.orEmpty(),
+        subtitle = if (isCurrent) "Playing now" else song.artistName,
+        songId = song.id,
+        isCurrent = isCurrent,
+        modifier = Modifier
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .padding(horizontal = 4.dp)
+    )
 }

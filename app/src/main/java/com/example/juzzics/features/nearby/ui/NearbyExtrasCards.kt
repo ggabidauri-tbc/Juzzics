@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -278,7 +277,7 @@ fun BlendPage(
             }
             if (blend.matches.isNotEmpty()) {
                 item { SectionHeader("Taste match") }
-                items(blend.matches, key = { "match_${it.friendName}" }) { match -> TasteMatchCard(match) }
+                itemsIndexed(blend.matches, key = { index, match -> "match_${index}_${match.friendName}" }) { _, match -> TasteMatchCard(match) }
             }
             if (blend.shared.isNotEmpty()) {
                 item { SectionHeader("Songs you share (${blend.shared.size})") }

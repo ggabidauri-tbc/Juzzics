@@ -153,3 +153,12 @@ enum class PlayTarget {
     /** sent over and played on this phone */
     MY_PHONE,
 }
+
+/** The "Together" activities, each opened as its own page. */
+enum class NearbyPanel(val title: String) {
+    PARTY("Party"),
+    CAR_DJ("Car DJ"),
+    SING("Sing along"),
+    SHOUT_OUT("Shout-out"),
+    RECEIVED("Songs friends sent"),
+}

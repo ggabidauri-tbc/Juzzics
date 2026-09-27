@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseViewModel
 import com.example.juzzics.common.base.viewModel.StateKey
+import com.example.juzzics.common.messages.AppMessages
 import com.example.juzzics.features.nearby.data.BlendMaker
 import com.example.juzzics.features.nearby.data.NearbyManager
 import com.example.juzzics.features.nearby.data.ReceivedSong
@@ -13,6 +14,7 @@ import com.example.juzzics.features.player.PlayerController
 import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
 import com.example.juzzics.features.nearby.domain.Blend
+import com.example.juzzics.features.nearby.domain.NearbyPanel
 import com.example.juzzics.features.nearby.domain.PlayTarget
 import com.example.juzzics.features.nearby.domain.RemoteCommand
 import com.example.juzzics.features.nearby.domain.RemoteSong
@@ -25,7 +27,7 @@ class NearbyVM(
     private val received: ReceivedSongs,
     private val player: PlayerController,
 ) : BaseViewModel(
-    listOf(NEARBY, OPEN_FRIEND, FRIEND_QUERY, PLAY_TARGET, SEND_MODE, SEND_TO_QUEUE, MY_SONGS, RECEIVED, MESSAGE, BLEND, SHOW_BLEND)
+    listOf(NEARBY, OPEN_FRIEND, FRIEND_QUERY, PLAY_TARGET, SEND_MODE, SEND_TO_QUEUE, MY_SONGS, RECEIVED, BLEND, SHOW_BLEND, PANEL, FRIEND_PAGE, SHOW_SETTINGS)
 ) {
 
     companion object {
@@ -47,8 +49,11 @@ class NearbyVM(
         val MY_SONGS = StateKey<List<RemoteSong>?>("mySongs", null)
         /** songs friends sent, newest first */
         val RECEIVED = StateKey<List<ReceivedSong>>("received", emptyList())
-        /** a message for the user (e.g. "Saved to Music/Juzzics") */
-        val MESSAGE = StateKey<String?>("message", null)
+        /** a "Together" activity opened as its own page */
+        val PANEL = StateKey<NearbyPanel?>("panel", null)
+        /** a connected friend's page (endpoint id) */
+        val FRIEND_PAGE = StateKey<String?>("friendPage", null)
+        val SHOW_SETTINGS = StateKey("showSettings", false)
     }
 
     /** "Reshuffle" makes a different mix */
@@ -78,6 +83,7 @@ class NearbyVM(
             is DisconnectAction -> {
                 nearby.disconnect(action.endpointId)
                 if (OPEN_FRIEND() == action.endpointId) OPEN_FRIEND(null)
+                if (FRIEND_PAGE() == action.endpointId) FRIEND_PAGE(null)
             }
             is OpenFriendAction -> {
                 OPEN_FRIEND(action.endpointId)
@@ -95,7 +101,7 @@ class NearbyVM(
             is ListenHereAction -> nearby.listenHere(action.endpointId, action.song)
             is QueueOnFriendAction -> {
                 nearby.queueOnFriend(action.endpointId, action.songId)
-                MESSAGE("Added to their queue")
+                AppMessages.show("Added to their queue")
             }
             is SetCarDjAction -> nearby.setCarDj(action.on)
             is OpenBlendAction -> {
@@ -122,7 +128,7 @@ class NearbyVM(
             is MicGainAction -> nearby.setMicGain(action.gain)
             is SendToFriendAction -> if (SEND_TO_QUEUE()) {
                 nearby.queueMySongOnFriend(action.endpointId, action.songId)
-                MESSAGE("Sending it to their queue…")
+                AppMessages.show("Sending it to their queue…")
             } else nearby.sendToFriend(action.endpointId, action.songId)
             is FriendQueryAction -> FRIEND_QUERY(action.query)
             is PlayOnFriendAction -> nearby.playOnFriend(action.endpointId, action.songId)
@@ -138,11 +144,17 @@ class NearbyVM(
             }
             is SaveReceivedAction -> launch(emitLoadingAction = false) {
                 received.saveToLibrary(action.songId)
-                    .onSuccess { MESSAGE("Saved to Music/Juzzics. It shows up in your songs next time the app opens.") }
-                    .onFailure { MESSAGE("Couldn't save it: ${it.message}") }
+                    .onSuccess { AppMessages.show("Saved to Music/Juzzics. It shows up in your songs next time the app opens.") }
+                    .onFailure { AppMessages.show("Couldn't save it: ${it.message}") }
             }
-            is DismissMessageAction -> MESSAGE(null)
-            is ShowMessageAction -> MESSAGE(action.message)
+            is OpenPanelAction -> PANEL(action.panel)
+            is OpenFriendPageAction -> FRIEND_PAGE(action.endpointId)
+            is ShowSettingsAction -> SHOW_SETTINGS(action.show)
+            is FindFriendsAction -> {
+                // visible and looking at once: nobody has to understand who shares and who looks
+                nearby.setSharing(true)
+                nearby.startSearching()
+            }
         }
     }
 
@@ -186,6 +198,11 @@ class NearbyVM(
     data object EndPartyAction : Action
     data class PlayReceivedAction(val songId: Long) : Action
     data class SaveReceivedAction(val songId: Long) : Action
-    data object DismissMessageAction : Action
-    data class ShowMessageAction(val message: String) : Action
+    /** null closes it */
+    data class OpenPanelAction(val panel: NearbyPanel?) : Action
+    /** null closes it */
+    data class OpenFriendPageAction(val endpointId: String?) : Action
+    data class ShowSettingsAction(val show: Boolean) : Action
+    /** this phone becomes visible and looks for friends */
+    data object FindFriendsAction : Action
 }

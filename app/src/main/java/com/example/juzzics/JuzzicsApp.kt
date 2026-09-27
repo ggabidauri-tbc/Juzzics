@@ -12,7 +12,6 @@ import com.example.juzzics.features.home.di.homeUseCasesModule
 import com.example.juzzics.features.home.di.homeViewModelsModule
 import com.example.juzzics.features.lyrics.di.lyricsRepoModule
 import com.example.juzzics.features.lyrics.di.lyricsUseCasesModule
-import com.example.juzzics.features.lyrics.di.lyricsVmModule
 import com.example.juzzics.features.lyrics.di.serviceModule
 import com.example.juzzics.features.musics.di.musicLocalDataModule
 import com.example.juzzics.features.musics.di.musicRepoModule
@@ -51,7 +50,7 @@ class JuzzicsApp : Application(), ImageLoaderFactory {
         listOf(musicLocalDataModule, musicRepoModule, musicUseCasesModule, musicViewModelsModule)
 
     private fun lyricsModules() =
-        listOf(lyricsRepoModule, serviceModule, lyricsUseCasesModule, lyricsVmModule)
+        listOf(lyricsRepoModule, serviceModule, lyricsUseCasesModule)
 
     private fun playlistsModules() =
         listOf(playlistsRepoModule, playlistsUseCasesModule, playlistsViewModelsModule)

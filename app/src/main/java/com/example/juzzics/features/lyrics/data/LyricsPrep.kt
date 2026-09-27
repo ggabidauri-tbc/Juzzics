@@ -8,6 +8,7 @@ import com.example.juzzics.features.lyrics.domain.repo.LyricsRepo
 import com.example.juzzics.features.lyrics.domain.util.suggestName
 import com.example.juzzics.features.musics.domain.repo.MusicRepo
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -19,6 +20,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+
+/** How many songs have lyrics saved (so they work offline). */
+data class LyricsCoverage(val withLyrics: Int, val total: Int)
 
 /** Progress of [LyricsPrep]. */
 data class LyricsPrepState(
@@ -62,7 +66,7 @@ class LyricsPrep(
         }
         stopReason = null
         _state.value = LyricsPrepState(running = true)
-        val newJob = scope.launch {
+        val newJob = scope.launch(start = CoroutineStart.LAZY) {
             val songs = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).filter { it.id > 0 }
             val withLyrics = lyricsRepo.songIdsWithLyrics()
             val missing = songs.filter { it.id !in withLyrics }
@@ -92,6 +96,7 @@ class LyricsPrep(
             }
         }
         job = newJob
+        newJob.start()
         newJob.invokeOnCompletion { cause ->
             _state.update { state ->
                 val summary = when {
@@ -103,6 +108,13 @@ class LyricsPrep(
                 state.copy(running = false, message = summary)
             }
         }
+    }
+
+    /** songs with lyrics saved, of all songs */
+    suspend fun coverage(): LyricsCoverage {
+        val songs = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).filter { it.id > 0 }
+        val withLyrics = lyricsRepo.songIdsWithLyrics()
+        return LyricsCoverage(withLyrics = songs.count { it.id in withLyrics }, total = songs.size)
     }
 
     fun stop() {

@@ -1,6 +1,6 @@
 package com.example.juzzics.common.base
 
-import android.widget.Toast
+import com.example.juzzics.common.messages.AppMessages
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,7 +19,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.juzzics.common.base.viewModel.UiEvent
 import kotlinx.coroutines.delay
@@ -37,12 +36,11 @@ fun Flow<UiEvent>.BaseHandler(
     onEvent: suspend (UiEvent) -> Unit = {},
     content: @Composable () -> Unit,
 ) {
-    val context = LocalContext.current
     val currentOnEvent by rememberUpdatedState(onEvent)
     LaunchedEffect(this) {
         collect {
             when (it) {
-                is UiEvent.Message -> Toast.makeText(context, it.msg, Toast.LENGTH_SHORT).show()
+                is UiEvent.Message -> AppMessages.show(it.msg)
                 else -> currentOnEvent(it)
             }
         }

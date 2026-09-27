@@ -1,5 +1,28 @@
 package com.example.juzzics.features.nearby.ui
 
+import androidx.compose.runtime.LaunchedEffect
+import com.example.juzzics.common.messages.AppMessages
+import com.example.juzzics.common.messages.AppMessage
+import com.example.juzzics.common.uiComponents.ScreenHeader
+import com.example.juzzics.common.uiComponents.SectionHeader
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Celebration
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.MicExternalOn
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.foundation.layout.Box
+import com.example.juzzics.features.nearby.domain.NearbyPanel
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -26,7 +49,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -49,7 +71,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -112,8 +133,8 @@ private fun nearbyPermissions(): Array<String> {
 }
 
 /**
- * Music with friends nearby, no internet needed: share your music, find friends' phones,
- * browse their songs and play / control them on their phone.
+ * Music with friends nearby, no internet needed. Alone: find friends. Connected: your friends
+ * and things to do together (party, Car DJ, blend, sing, shout-out), each on its own page.
  */
 @Composable
 fun NearbyScreen(
@@ -148,84 +169,102 @@ fun NearbyScreen(
             } else onAction(NearbyVM.SaveReceivedAction(id))
         }
 
-        // shout-outs need the microphone
+        // shout-outs and singing need the microphone
         fun micGranted() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
         val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-        val shoutOutPermission = ::micGranted to { micLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+        val micPermission = ::micGranted to { micLauncher.launch(Manifest.permission.RECORD_AUDIO) }
 
         val nearby = NEARBY()
         val openFriend = OPEN_FRIEND()?.let { id -> nearby.friends.find { it.endpointId == id } }
+        val friendPage = FRIEND_PAGE()?.let { id -> nearby.friends.find { it.endpointId == id } }
+        val panel = PANEL()
 
-        Surface(Modifier.fillMaxSize()) {
-            when {
-                !granted -> Column(
-                    Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    EmptyState(
-                        icon = Icons.Filled.WifiTethering,
-                        title = "Music with friends nearby",
-                        message = "Juzzics finds friends' phones with Bluetooth and Wi-Fi, no internet needed. " +
-                                "Android asks for \"Nearby devices\" access for that.",
-                    )
-                    Button(onClick = { permissionLauncher.launch(nearbyPermissions()) }) {
-                        Text("Allow nearby devices")
-                    }
-                }
-
-                SHOW_BLEND() -> BlendPage(
-                    blend = BLEND(),
-                    onBack = { onAction(NearbyVM.OpenBlendAction(false)) },
-                    onPlayMix = { onAction(NearbyVM.PlayBlendAction(it)) },
-                    onReshuffle = { onAction(NearbyVM.ReshuffleBlendAction) },
-                    onPlayShared = { onAction(NearbyVM.PlaySharedAction(it)) },
-                )
-
-                openFriend != null && SEND_MODE() -> SendSongsPage(
-                    friend = openFriend,
-                    mySongs = MY_SONGS(),
-                    toQueue = SEND_TO_QUEUE(),
-                    query = !FRIEND_QUERY,
-                    transfers = nearby.transfers,
-                    onAction = onAction,
-                )
-
-                openFriend != null -> FriendLibrary(
-                    friend = openFriend,
-                    query = !FRIEND_QUERY,
-                    target = PLAY_TARGET(),
-                    transfers = nearby.transfers,
-                    onAction = onAction,
-                )
-
-                else -> NearbyHome(
-                    nearby = nearby,
-                    received = RECEIVED(),
-                    onSave = saveReceived,
-                    micPermission = shoutOutPermission,
-                    onAction = onAction,
-                )
+        // problems show as a note at the bottom, not a dialog to tap away
+        LaunchedEffect(nearby.error) {
+            nearby.error?.let {
+                AppMessages.show(AppMessage(it, long = true))
+                onAction(NearbyVM.DismissErrorAction)
             }
         }
 
+        when {
+            !granted -> NearbyIntro(
+                title = "Music with friends nearby",
+                text = "Juzzics finds friends' phones over Bluetooth and Wi-Fi, no internet needed. " +
+                        "Android calls that \"Nearby devices\".",
+                button = "Allow nearby devices",
+                onClick = { permissionLauncher.launch(nearbyPermissions()) }
+            )
+
+            SHOW_BLEND() -> BlendPage(
+                blend = BLEND(),
+                onBack = { onAction(NearbyVM.OpenBlendAction(false)) },
+                onPlayMix = { onAction(NearbyVM.PlayBlendAction(it)) },
+                onReshuffle = { onAction(NearbyVM.ReshuffleBlendAction) },
+                onPlayShared = { onAction(NearbyVM.PlaySharedAction(it)) },
+            )
+
+            openFriend != null && SEND_MODE() -> SendSongsPage(
+                friend = openFriend,
+                mySongs = MY_SONGS(),
+                toQueue = SEND_TO_QUEUE(),
+                query = !FRIEND_QUERY,
+                transfers = nearby.transfers,
+                onAction = onAction,
+            )
+
+            openFriend != null -> FriendLibrary(
+                friend = openFriend,
+                query = !FRIEND_QUERY,
+                target = PLAY_TARGET(),
+                transfers = nearby.transfers,
+                onAction = onAction,
+            )
+
+            friendPage != null -> FriendPage(friendPage, nearby.transfers, onAction)
+
+            panel != null -> PanelPage(
+                panel = panel,
+                nearby = nearby,
+                received = RECEIVED(),
+                onSave = saveReceived,
+                micPermission = micPermission,
+                onAction = onAction,
+            )
+
+            else -> NearbyHome(nearby = nearby, received = RECEIVED(), onAction = onAction)
+        }
+
         nearby.pending?.let { PairingDialog(it, onAction) }
-        nearby.error?.let { error ->
-            AlertDialog(
-                onDismissRequest = { onAction(NearbyVM.DismissErrorAction) },
-                title = { Text("Nearby") },
-                text = { Text(error) },
-                confirmButton = { TextButton(onClick = { onAction(NearbyVM.DismissErrorAction) }) { Text("OK") } }
-            )
-        }
-        MESSAGE()?.let { message ->
-            AlertDialog(
-                onDismissRequest = { onAction(NearbyVM.DismissMessageAction) },
-                text = { Text(message) },
-                confirmButton = { TextButton(onClick = { onAction(NearbyVM.DismissMessageAction) }) { Text("OK") } }
-            )
-        }
+        if (SHOW_SETTINGS()) NearbySettingsSheet(nearby, onAction)
+    }
+}
+
+/** a centered explanation with one button (no permission yet) */
+@Composable
+private fun NearbyIntro(title: String, text: String, button: String, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            Icons.Filled.WifiTethering,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(64.dp)
+        )
+        Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Button(onClick = onClick) { Text(button) }
     }
 }
 
@@ -233,184 +272,134 @@ fun NearbyScreen(
 private fun NearbyHome(
     nearby: NearbyState,
     received: List<ReceivedSong>,
-    onSave: (Long) -> Unit,
-    /** has it / ask for it */
-    micPermission: Pair<() -> Boolean, () -> Unit>,
     onAction: (Action) -> Unit,
 ) {
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    val connected = nearby.friends.isNotEmpty()
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
-            Text("Nearby", style = MaterialTheme.typography.headlineLarge)
-            Text(
-                "Play music with friends around you, no internet needed",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            ScreenHeader(
+                title = "Nearby",
+                subtitle = if (connected) "Connected to ${nearby.friends.joinToString { it.name }}"
+                else "Music with friends, no internet needed",
+                actions = {
+                    IconButton(onClick = { onAction(NearbyVM.ShowSettingsAction(true)) }) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Nearby settings")
+                    }
+                }
             )
         }
-        item { ShareCard(nearby, onAction) }
-        item { ShareAppCard(onMessage = { onAction(NearbyVM.ShowMessageAction(it)) }) }
 
         if (nearby.transfers.isNotEmpty()) {
-            item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(vertical = 8.dp)) { Transfers(nearby.transfers) } } }
-        }
-
-        if (nearby.friends.isNotEmpty()) {
             item {
-                ShoutOutCard(
-                    recording = nearby.recordingShoutOut,
-                    playingFrom = nearby.shoutOutFrom,
-                    hasPermission = micPermission.first,
-                    askPermission = micPermission.second,
-                    onStart = { onAction(NearbyVM.StartShoutOutAction) },
-                    onStop = { send -> onAction(NearbyVM.StopShoutOutAction(send)) },
-                )
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) { Column(Modifier.padding(vertical = 8.dp)) { Transfers(nearby.transfers) } }
             }
         }
 
-        if (nearby.friends.isNotEmpty() || nearby.singer != null) {
+        if (!connected) {
+            item { FindFriendsHero(nearby, onAction) }
+        } else {
             item {
-                SingCard(
-                    friends = nearby.friends.map { it.endpointId to it.name },
-                    singingTo = nearby.singingTo,
-                    singer = nearby.singer,
-                    micGain = nearby.micGain,
-                    hasPermission = micPermission.first,
-                    askPermission = micPermission.second,
-                    onStart = { onAction(NearbyVM.StartSingingAction(it)) },
-                    onStop = { onAction(NearbyVM.StopSingingAction) },
-                    onStopSinger = { onAction(NearbyVM.StopSingerAction) },
-                    onGain = { onAction(NearbyVM.MicGainAction(it)) },
-                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(nearby.friends, key = { it.endpointId }) { friend ->
+                        FriendTile(friend, onClick = { onAction(NearbyVM.OpenFriendPageAction(friend.endpointId)) })
+                    }
+                    item { AddFriendTile(searching = nearby.searching, onClick = { onAction(NearbyVM.FindFriendsAction) }) }
+                }
+            }
+            if (nearby.searching || nearby.found.isNotEmpty()) {
+                item { FoundDevices(nearby, onAction, Modifier.padding(horizontal = 16.dp)) }
+            }
+            item { SectionHeader("Together") }
+            item { TogetherGrid(nearby, received, onAction) }
+        }
+
+        item {
+            Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp)) {
+                ShareAppCard(onMessage = { AppMessages.show(AppMessage(it, long = true)) })
             }
         }
-
-        if (nearby.friends.isNotEmpty() || nearby.carDj) {
-            item { CarDjCard(on = nearby.carDj, queue = nearby.djQueue, onToggle = { onAction(NearbyVM.SetCarDjAction(it)) }) }
-        }
-
-        if (nearby.friends.any { it.library.isNotEmpty() }) {
+        if (!connected && received.isNotEmpty()) {
             item {
-                BlendCard(
-                    friendNames = nearby.friends.map { it.name },
-                    onOpen = { onAction(NearbyVM.OpenBlendAction(true)) },
-                )
-            }
-        }
-
-        if (nearby.friends.isNotEmpty() || nearby.party.role != PartyRole.NONE) {
-            item {
-                PartyCard(
-                    party = nearby.party,
-                    hasFriends = nearby.friends.isNotEmpty(),
-                    onStart = { onAction(NearbyVM.StartPartyAction) },
-                    onEnd = { onAction(NearbyVM.EndPartyAction) },
-                )
-            }
-        }
-
-        if (nearby.friends.isNotEmpty()) {
-            item { Text("Connected", style = MaterialTheme.typography.titleLarge) }
-            items(nearby.friends, key = { it.endpointId }) { friend -> FriendCard(friend, onAction) }
-        }
-
-        item { FindFriendsCard(nearby, onAction) }
-
-        if (received.isNotEmpty()) {
-            item {
-                ReceivedSongsCard(
-                    songs = received,
-                    onPlay = { onAction(NearbyVM.PlayReceivedAction(it)) },
-                    onSave = onSave,
+                TogetherRow(
+                    icon = Icons.Filled.Inbox,
+                    title = "Songs friends sent",
+                    subtitle = "${received.size} kept on this phone",
+                    onClick = { onAction(NearbyVM.OpenPanelAction(NearbyPanel.RECEIVED)) },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                 )
             }
         }
     }
 }
 
+/** alone: one clear step, "Find friends" (visible + looking at once), and who's around */
 @Composable
-private fun ShareCard(nearby: NearbyState, onAction: (Action) -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Share my music", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        if (nearby.sharing) "Friends nearby can find this phone and play its songs"
-                        else "Turn on so friends can find you",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(checked = nearby.sharing, onCheckedChange = { onAction(NearbyVM.SetSharingAction(it)) })
+private fun FindFriendsHero(nearby: NearbyState, onAction: (Action) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(24.dp))
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            Icons.Filled.WifiTethering,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(48.dp)
+        )
+        Text(
+            "Play music together",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(top = 12.dp)
+        )
+        Text(
+            "Browse each other's songs, play on each other's phones, party, sing along. " +
+                    "Your friend opens Nearby too and taps Find friends.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+        )
+        if (nearby.searching) {
+            OutlinedButton(onClick = { onAction(NearbyVM.SearchAction(false)) }) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Looking… tap to stop", modifier = Modifier.padding(start = 10.dp))
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Friends can save my songs", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        if (nearby.letFriendsSave) "Songs you send can be kept on their phone"
-                        else "Songs you send can only be listened to",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(checked = nearby.letFriendsSave, onCheckedChange = { onAction(NearbyVM.LetFriendsSaveAction(it)) })
+        } else {
+            Button(onClick = { onAction(NearbyVM.FindFriendsAction) }) {
+                Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("Find friends", modifier = Modifier.padding(start = 8.dp))
             }
-            var name by remember(nearby.deviceName) { mutableStateOf(nearby.deviceName) }
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Name friends see") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onAction(NearbyVM.RenameDeviceAction(name)) }),
-                trailingIcon = {
-                    if (name != nearby.deviceName) {
-                        TextButton(onClick = { onAction(NearbyVM.RenameDeviceAction(name)) }) { Text("Save") }
-                    }
-                },
+        }
+        if (nearby.found.isNotEmpty() || nearby.searching) {
+            FoundDevices(nearby, onAction, Modifier.padding(top = 16.dp))
+        }
+    }
+}
+
+/** phones found nearby, each with Connect */
+@Composable
+private fun FoundDevices(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth()) {
+        if (nearby.found.isEmpty()) {
+            Text(
+                "Looking for phones with Juzzics open…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
         }
-    }
-}
-
-@Composable
-private fun FindFriendsCard(nearby: NearbyState, onAction: (Action) -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Friends nearby", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "They need Juzzics open with \"Share my music\" on",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (nearby.searching) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { onAction(NearbyVM.SearchAction(false)) }) { Text("Stop") }
-                } else {
-                    FilledTonalButton(onClick = { onAction(NearbyVM.SearchAction(true)) }) {
-                        Icon(Icons.Filled.Search, contentDescription = null)
-                        Text("Look", modifier = Modifier.padding(start = 6.dp))
-                    }
-                }
-            }
-            if (nearby.found.isEmpty()) {
-                Text(
-                    if (nearby.searching) "Looking for phones…" else "Tap Look to find friends' phones",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
-            }
-            nearby.found.forEach { device -> FoundDeviceRow(device, onAction) }
-        }
+        nearby.found.forEach { device -> FoundDeviceRow(device, onAction) }
     }
 }
 
@@ -419,12 +408,13 @@ private fun FoundDeviceRow(device: NearbyDevice, onAction: (Action) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Filled.PhoneAndroid, contentDescription = null)
+        Avatar(device.name, Modifier.size(40.dp))
         Text(
             device.name,
+            style = MaterialTheme.typography.titleSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
@@ -435,67 +425,422 @@ private fun FoundDeviceRow(device: NearbyDevice, onAction: (Action) -> Unit) {
     }
 }
 
+/** a round badge with the first letter of a name */
 @Composable
-private fun FriendCard(friend: ConnectedFriend, onAction: (Action) -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.PhoneAndroid, contentDescription = null)
-                Text(
-                    friend.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 12.dp)
-                )
-                IconButton(onClick = { onAction(NearbyVM.DisconnectAction(friend.endpointId)) }) {
-                    Icon(Icons.Filled.Close, contentDescription = "Disconnect")
-                }
+private fun Avatar(name: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier.background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            name.trim().take(1).uppercase().ifBlank { "?" },
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
+    }
+}
+
+/** a connected friend: name and what's playing on their phone; opens their page */
+@Composable
+private fun FriendTile(friend: ConnectedFriend, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(132.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick)
+            .padding(14.dp)
+    ) {
+        Avatar(friend.name, Modifier.size(44.dp))
+        Text(
+            friend.name,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 10.dp)
+        )
+        val playing = friend.nowPlaying
+        Text(
+            when {
+                playing == null -> "Not playing"
+                playing.isPlaying -> "▶ ${playing.title}"
+                else -> "Paused"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (friend.djOpen) {
+            Text("Car DJ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun AddFriendTile(searching: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(96.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp))
+            .clickable(enabled = !searching, onClick = onClick)
+            .padding(14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            if (searching) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Filled.PersonAdd, contentDescription = null)
+        }
+        Text(
+            if (searching) "Looking…" else "Add",
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(top = 10.dp)
+        )
+    }
+}
+
+/** the things to do together, as tiles; active ones say so */
+@Composable
+private fun TogetherGrid(nearby: NearbyState, received: List<ReceivedSong>, onAction: (Action) -> Unit) {
+    val party = nearby.party
+    val tiles = buildList {
+        add(
+            TogetherTile(
+                Icons.Filled.Celebration, "Party",
+                when (party.role) {
+                    PartyRole.HOST -> "On · ${party.guestNames.size} following"
+                    PartyRole.GUEST -> "In ${party.hostName}'s party"
+                    PartyRole.NONE -> "All phones play as one"
+                },
+                active = party.role != PartyRole.NONE,
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.PARTY)) }
+        )
+        add(
+            TogetherTile(
+                Icons.Filled.DirectionsCar, "Car DJ",
+                if (nearby.carDj) "On · ${nearby.djQueue.size} up next" else "Everyone adds songs",
+                active = nearby.carDj,
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.CAR_DJ)) }
+        )
+        add(
+            TogetherTile(Icons.Filled.Groups, "Blend & match", "Your mix, your taste match") {
+                onAction(NearbyVM.OpenBlendAction(true))
             }
-            val playing = friend.nowPlaying
-            Text(
-                if (playing == null) "Nothing playing on their phone"
-                else "${if (playing.isPlaying) "Playing" else "Paused"}: ${playing.title}" +
-                        playing.artist.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            RemoteControls(friend, onAction)
-            if (friend.djOpen) {
-                Text(
-                    "Car DJ: add songs to their queue",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                UpNext(friend.upNext, emptyText = "Their queue is empty", max = 4)
+        )
+        add(
+            TogetherTile(
+                Icons.Filled.MicExternalOn, "Sing along",
+                when {
+                    nearby.singingTo != null -> "You're live"
+                    nearby.singer != null -> "${nearby.singer} is singing"
+                    else -> "Your phone as a mic"
+                },
+                active = nearby.singingTo != null || nearby.singer != null,
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.SING)) }
+        )
+        add(
+            TogetherTile(
+                Icons.Filled.Mic, "Shout-out",
+                nearby.shoutOutFrom?.let { "$it is talking" } ?: "Hold to talk to everyone",
+                active = nearby.shoutOutFrom != null,
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.SHOUT_OUT)) }
+        )
+        add(
+            TogetherTile(
+                Icons.Filled.Inbox, "Received",
+                if (received.isEmpty()) "Songs friends send you" else "${received.size} songs",
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.RECEIVED)) }
+        )
+    }
+    Column(
+        Modifier.padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        tiles.chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                row.forEach { tile -> TogetherTileView(tile, Modifier.weight(1f)) }
+                if (row.size == 1) Box(Modifier.weight(1f))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { onAction(NearbyVM.OpenFriendAction(friend.endpointId)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        if (friend.library.isEmpty() && !friend.libraryComplete) "Loading songs…"
-                        else "Their songs (${friend.library.size})",
-                        maxLines = 1
+        }
+    }
+}
+
+private class TogetherTile(
+    val icon: ImageVector,
+    val title: String,
+    val subtitle: String,
+    val active: Boolean = false,
+    val onClick: () -> Unit,
+)
+
+@Composable
+private fun TogetherTileView(tile: TogetherTile, modifier: Modifier = Modifier) {
+    val container = if (tile.active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+    val content = if (tile.active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier
+            .background(container, RoundedCornerShape(20.dp))
+            .clickable(onClick = tile.onClick)
+            .padding(16.dp)
+    ) {
+        Icon(tile.icon, contentDescription = null, tint = if (tile.active) content else MaterialTheme.colorScheme.primary)
+        Text(tile.title, style = MaterialTheme.typography.titleSmall, color = content, modifier = Modifier.padding(top = 12.dp))
+        Text(
+            tile.subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = content.copy(alpha = 0.75f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** one tappable row (icon, title, subtitle, arrow) */
+@Composable
+private fun TogetherRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+    }
+}
+
+/** a "Together" activity on its own page */
+@Composable
+private fun PanelPage(
+    panel: NearbyPanel,
+    nearby: NearbyState,
+    received: List<ReceivedSong>,
+    onSave: (Long) -> Unit,
+    micPermission: Pair<() -> Boolean, () -> Unit>,
+    onAction: (Action) -> Unit,
+) {
+    BackHandler { onAction(NearbyVM.OpenPanelAction(null)) }
+    Column(Modifier.fillMaxSize()) {
+        PageHeader(
+            title = panel.title,
+            subtitle = when (panel) {
+                NearbyPanel.PARTY -> "Every connected phone plays the same song at the same moment"
+                NearbyPanel.CAR_DJ -> "The phone in the car takes everyone's songs, in turns"
+                NearbyPanel.SING -> "Your voice, live, on the phone playing the music"
+                NearbyPanel.SHOUT_OUT -> "A quick voice message, played over the music"
+                NearbyPanel.RECEIVED -> "The last songs friends sent you"
+            },
+            onBack = { onAction(NearbyVM.OpenPanelAction(null)) }
+        )
+        LazyColumn(
+            Modifier.weight(1f),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                when (panel) {
+                    NearbyPanel.PARTY -> PartyCard(
+                        party = nearby.party,
+                        hasFriends = nearby.friends.isNotEmpty(),
+                        onStart = { onAction(NearbyVM.StartPartyAction) },
+                        onEnd = { onAction(NearbyVM.EndPartyAction) },
                     )
+                    NearbyPanel.CAR_DJ -> CarDjCard(
+                        on = nearby.carDj,
+                        queue = nearby.djQueue,
+                        onToggle = { onAction(NearbyVM.SetCarDjAction(it)) }
+                    )
+                    NearbyPanel.SING -> SingCard(
+                        friends = nearby.friends.map { it.endpointId to it.name },
+                        singingTo = nearby.singingTo,
+                        singer = nearby.singer,
+                        micGain = nearby.micGain,
+                        hasPermission = micPermission.first,
+                        askPermission = micPermission.second,
+                        onStart = { onAction(NearbyVM.StartSingingAction(it)) },
+                        onStop = { onAction(NearbyVM.StopSingingAction) },
+                        onStopSinger = { onAction(NearbyVM.StopSingerAction) },
+                        onGain = { onAction(NearbyVM.MicGainAction(it)) },
+                    )
+                    NearbyPanel.SHOUT_OUT -> ShoutOutCard(
+                        recording = nearby.recordingShoutOut,
+                        playingFrom = nearby.shoutOutFrom,
+                        hasPermission = micPermission.first,
+                        askPermission = micPermission.second,
+                        onStart = { onAction(NearbyVM.StartShoutOutAction) },
+                        onStop = { send -> onAction(NearbyVM.StopShoutOutAction(send)) },
+                    )
+                    NearbyPanel.RECEIVED -> if (received.isEmpty()) {
+                        EmptyState(
+                            icon = Icons.Filled.Inbox,
+                            title = "Nothing yet",
+                            message = "When a friend sends you a song, it shows up here for a while"
+                        )
+                    } else {
+                        ReceivedSongsCard(
+                            songs = received,
+                            onPlay = { onAction(NearbyVM.PlayReceivedAction(it)) },
+                            onSave = onSave,
+                        )
+                    }
                 }
-                OutlinedButton(
-                    onClick = { onAction(NearbyVM.OpenSendAction(friend.endpointId, toQueue = friend.djOpen)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, Modifier.size(18.dp))
+            }
+            if (panel != NearbyPanel.RECEIVED && nearby.friends.isEmpty()) {
+                item {
                     Text(
-                        if (friend.djOpen) "Queue my songs" else "Send my song",
-                        maxLines = 1,
-                        modifier = Modifier.padding(start = 6.dp)
+                        "Connect to a friend first (Nearby > Find friends).",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
+    }
+}
+
+/** a connected friend: what they play, remote control, their songs, send them yours */
+@Composable
+private fun FriendPage(friend: ConnectedFriend, transfers: List<SongTransfer>, onAction: (Action) -> Unit) {
+    BackHandler { onAction(NearbyVM.OpenFriendPageAction(null)) }
+    Column(Modifier.fillMaxSize()) {
+        PageHeader(
+            title = friend.name,
+            subtitle = if (friend.djOpen) "Their phone is the Car DJ" else "Connected",
+            onBack = { onAction(NearbyVM.OpenFriendPageAction(null)) }
+        )
+        LazyColumn(
+            Modifier.weight(1f),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(20.dp))
+                        .padding(16.dp)
+                ) {
+                    Text("On their phone", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val playing = friend.nowPlaying
+                    Text(
+                        playing?.title ?: "Nothing playing",
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    if (playing != null && playing.artist.isNotBlank()) {
+                        Text(playing.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    RemoteControls(friend, onAction)
+                }
+            }
+            if (friend.djOpen) {
+                item {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp))
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) { UpNext(friend.upNext, emptyText = "Their queue is empty: add a song!", max = 6) }
+                }
+            }
+            item {
+                TogetherRow(
+                    icon = Icons.AutoMirrored.Filled.QueueMusic,
+                    title = "Their songs",
+                    subtitle = if (friend.library.isEmpty() && !friend.libraryComplete) "Loading…"
+                    else "${friend.library.size} songs · play there, or here",
+                    onClick = { onAction(NearbyVM.OpenFriendAction(friend.endpointId)) }
+                )
+            }
+            item {
+                TogetherRow(
+                    icon = Icons.AutoMirrored.Filled.Send,
+                    title = if (friend.djOpen) "Add your songs to their queue" else "Send them one of your songs",
+                    subtitle = if (friend.djOpen) "Your songs take turns with everyone's" else "It plays on their phone",
+                    onClick = { onAction(NearbyVM.OpenSendAction(friend.endpointId, toQueue = friend.djOpen)) }
+                )
+            }
+            if (transfers.any { it.endpointId == friend.endpointId }) {
+                item { Transfers(transfers.filter { it.endpointId == friend.endpointId }) }
+            }
+            item {
+                OutlinedButton(
+                    onClick = { onAction(NearbyVM.DisconnectAction(friend.endpointId)) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Disconnect") }
+            }
+        }
+    }
+}
+
+/** your name, visibility, what friends may do */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NearbySettingsSheet(nearby: NearbyState, onAction: (Action) -> Unit) {
+    ModalBottomSheet(onDismissRequest = { onAction(NearbyVM.ShowSettingsAction(false)) }) {
+        Column(
+            Modifier.padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text("Nearby settings", style = MaterialTheme.typography.titleLarge)
+            var name by remember(nearby.deviceName) { mutableStateOf(nearby.deviceName) }
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Your name (friends see it)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onAction(NearbyVM.RenameDeviceAction(name)) }),
+                trailingIcon = {
+                    if (name != nearby.deviceName) {
+                        TextButton(onClick = { onAction(NearbyVM.RenameDeviceAction(name)) }) { Text("Save") }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            SettingSwitch(
+                title = "Visible to friends",
+                subtitle = if (nearby.sharing) "Friends nearby can find this phone" else "Friends can't find you (you can still find them)",
+                checked = nearby.sharing,
+                onChange = { onAction(NearbyVM.SetSharingAction(it)) }
+            )
+            SettingSwitch(
+                title = "Friends can save my songs",
+                subtitle = if (nearby.letFriendsSave) "Songs you send can be kept on their phone"
+                else "Songs you send can only be listened to",
+                checked = nearby.letFriendsSave,
+                onChange = { onAction(NearbyVM.LetFriendsSaveAction(it)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
