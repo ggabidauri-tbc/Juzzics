@@ -29,6 +29,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.filled.BatteryStd
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LocationOff
@@ -122,6 +126,11 @@ private data class RadarFriend(
     val tooCloseForDirection: Boolean = false,
     /** out of this phone's range: the position came through friends' phones */
     val relayed: Boolean = false,
+    /** their battery (0..100), null if unknown */
+    val battery: Int? = null,
+    val charging: Boolean = false,
+    /** hasn't moved for this long (minutes), 0 if moving */
+    val stillMinutes: Long = 0,
 )
 
 /** a meeting point, from here */
@@ -324,11 +333,16 @@ private fun radarFriends(nearby: NearbyState, now: Long): List<RadarFriend> {
             ageSeconds = (now - fix.atElapsedMs) / 1000,
             tooCloseForDirection = distance != null && distance < maxOf(uncertainty, MIN_DIRECTION_M),
             relayed = person.relayed,
+            battery = person.battery,
+            charging = person.charging,
+            stillMinutes = person.stillSinceMs?.let { (now - it) / 60_000 } ?: 0,
         )
     }
     val notSharing = nearby.friends
         .filter { (it.phoneId ?: it.endpointId) !in radar.people }
-        .map { RadarFriend(it.phoneId ?: it.endpointId, it.name, null, null, null, null) }
+        .map {
+            RadarFriend(it.phoneId ?: it.endpointId, it.name, null, null, null, null, battery = it.battery, charging = it.charging)
+        }
     return sharing + notSharing
 }
 
@@ -382,6 +396,7 @@ private fun RadarMode(
     HiddenPinsButton(radar, onAction)
 
     SharingCard(radar = radar, hasPrecise = hasPrecise, onAction = onAction)
+    CheckOnFriendsCard(nearby.checkMinutes, onAction)
 
     // everyone, closest first
     friends.sortedBy { it.distanceM ?: Float.MAX_VALUE }.forEach { friend ->
@@ -683,7 +698,8 @@ private fun MapMode(
             add(
                 MapPerson(
                     key = id,
-                    name = person.name,
+                    // a low battery shows on the map too
+                    name = person.name + (person.battery?.takeIf { it <= 15 && !person.charging }?.let { " · 🔋$it%" } ?: ""),
                     lat = person.fix.lat,
                     lon = person.fix.lon,
                     color = colorOf(id),
@@ -1008,7 +1024,23 @@ private fun FriendDistanceRow(friend: RadarFriend, heading: () -> Float?) {
                 .weight(1f)
                 .padding(start = 12.dp)
         ) {
-            Text(friend.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    friend.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                friend.battery?.let { level -> BatteryLabel(level, friend.charging) }
+            }
+            if (friend.stillMinutes >= STILL_NOTE_MINUTES && (friend.ageSeconds ?: Long.MAX_VALUE) < STALE_MS / 1000) {
+                Text(
+                    "Hasn't moved for ${friend.stillMinutes} min",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
             val age = friend.ageSeconds
             val seen = when {
                 age == null -> ""
@@ -1034,6 +1066,62 @@ private fun FriendDistanceRow(friend: RadarFriend, heading: () -> Float?) {
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
+        }
+    }
+}
+
+/** "🔋 64%", red when low (and not charging) */
+@Composable
+private fun BatteryLabel(level: Int, charging: Boolean) {
+    val low = level <= 15 && !charging
+    Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            when {
+                charging -> Icons.Filled.BatteryChargingFull
+                low -> Icons.Filled.BatteryAlert
+                else -> Icons.Filled.BatteryStd
+            },
+            contentDescription = null,
+            tint = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            "$level%",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** "Check on friends": alert when someone sharing hasn't moved / hasn't been heard of for a while */
+@Composable
+private fun CheckOnFriendsCard(minutes: Int, onAction: (Action) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(16.dp))
+            .padding(16.dp)
+    ) {
+        Text("Check on friends", style = MaterialTheme.typography.titleSmall)
+        Text(
+            if (minutes == 0) "Off. You still get a warning when a friend's battery is low."
+            else "You get an alert if someone sharing their location hasn't moved, or hasn't been heard of, for this long. And when a battery is low.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            Modifier
+                .padding(top = 8.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(0 to "Off", 15 to "15 min", 30 to "30 min", 60 to "1 hour").forEach { (value, label) ->
+                FilterChip(
+                    selected = minutes == value,
+                    onClick = { onAction(NearbyVM.CheckMinutesAction(value)) },
+                    label = { Text(label) }
+                )
+            }
         }
     }
 }
@@ -1156,6 +1244,9 @@ private fun RadarView(friends: List<RadarFriend>, pins: List<RadarPin>, hasMe: B
 
 /** meeting points: gold, the same on the radar and the map */
 internal val PinColor = Color(0xFFF2C66D)
+
+/** "Hasn't moved for 20 min" shows from this long on (the alert comes at the chosen time) */
+private const val STILL_NOTE_MINUTES = 10L
 
 /** a position older than this is drawn faded ("last seen") */
 private const val STALE_MS = 60_000L

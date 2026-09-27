@@ -71,6 +71,9 @@ data class NearbyMessage(
     val text: String? = null,
     /** CHAT_ACK: which message arrived ("sender's phone id/its counter") */
     val ack: String? = null,
+    /** LOCATION / PING: the sender's battery (0..100) and whether it's charging */
+    val battery: Int? = null,
+    val charging: Boolean? = null,
 ) {
     companion object {
         /** "send me your songs" */

@@ -42,6 +42,9 @@ data class ConnectedFriend(
     val upNext: List<QueueEntry> = emptyList(),
     /** their phone's lasting id (the endpoint id changes with every connection); null until it says hello */
     val phoneId: String? = null,
+    /** their phone's battery (0..100), null until known */
+    val battery: Int? = null,
+    val charging: Boolean = false,
 )
 
 /** A song in a Car DJ queue, and who added it (blank: the phone's owner). */
@@ -90,6 +93,8 @@ data class NearbyState(
     val chat: List<ChatMessage> = emptyList(),
     /** chat messages that came while the chat wasn't open */
     val unreadChat: Int = 0,
+    /** "check on friends": alert when someone sharing hasn't moved / hasn't been heard of this long (0 = off) */
+    val checkMinutes: Int = 30,
     val error: String? = null,
 )
 
@@ -215,6 +220,11 @@ data class RadarPerson(
     val fix: GeoFix,
     /** came through other phones (not connected to this one directly) */
     val relayed: Boolean,
+    /** their phone's battery (0..100), null if unknown (an older Juzzics) */
+    val battery: Int? = null,
+    val charging: Boolean = false,
+    /** since when they haven't really moved (elapsedRealtime), for "hasn't moved for 30 min" */
+    val stillSinceMs: Long? = null,
 )
 
 /** A meeting point someone set ("meet here"). */

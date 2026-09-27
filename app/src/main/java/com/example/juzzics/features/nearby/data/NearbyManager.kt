@@ -13,6 +13,7 @@ import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import androidx.core.content.edit
@@ -188,6 +189,78 @@ class NearbyManager(
     }
 
     fun dismissComeToMe() = radar.dismissComeToMe()
+
+    // ---------------------- checking on friends ----------------------
+
+    /** alerts already given (per person and kind), so each one comes once */
+    private val alerted = mutableSetOf<String>()
+
+    fun setCheckMinutes(minutes: Int) {
+        prefs.edit { putInt(KEY_CHECK_MINUTES, minutes) }
+        _state.update { it.copy(checkMinutes = minutes) }
+    }
+
+    init {
+        _state.update { it.copy(checkMinutes = prefs.getInt(KEY_CHECK_MINUTES, 30)) }
+        scope.launch {
+            while (true) {
+                delay(CHECK_EVERY_MS)
+                checkOnFriends()
+            }
+        }
+    }
+
+    /**
+     * Low batteries, and (if on) someone sharing their location who hasn't moved, or hasn't been
+     * heard of, for [NearbyState.checkMinutes]: each alert once, again only after it got better.
+     */
+    private fun checkOnFriends() {
+        val state = _state.value
+        val now = SystemClock.elapsedRealtime()
+        val limit = state.checkMinutes * 60_000L
+
+        fun once(key: String, bad: Boolean, alert: () -> Unit) {
+            if (bad) {
+                if (alerted.add(key)) alert()
+            } else alerted -= key
+        }
+
+        // batteries: people sharing (also through friends), and connected friends
+        val batteries = state.radar.people.map { (id, person) -> Triple(id, person.name, person.battery to person.charging) } +
+                state.friends.filter { (it.phoneId ?: it.endpointId) !in state.radar.people }
+                    .map { Triple(it.phoneId ?: it.endpointId, it.name, it.battery to it.charging) }
+        batteries.forEach { (id, name, power) ->
+            val (level, charging) = power
+            if (level == null) return@forEach
+            // (a few percent of room before it can warn again)
+            val low = !charging && level <= LOW_BATTERY
+            if (!low && level <= LOW_BATTERY + 5 && !charging) return@forEach
+            once("battery/$id", low) {
+                alerts.friendAlert("battery/$id", "$name's phone is at $level%", "When it dies, they're gone from the radar. Stay close or share a meeting point.")
+            }
+        }
+
+        if (limit <= 0) return
+        state.radar.people.forEach { (id, person) ->
+            val silentFor = now - person.fix.atElapsedMs
+            once("silent/$id", silentFor > limit) {
+                alerts.friendAlert(
+                    "silent/$id",
+                    "No news from ${person.name} for ${silentFor / 60_000} min",
+                    "Their phone may be off, or out of everyone's range. Tap to see where they were last."
+                )
+            }
+            val stillFor = person.stillSinceMs?.let { now - it } ?: 0L
+            // (only while their position keeps coming: otherwise it's "no news")
+            once("still/$id", silentFor < limit && stillFor > limit) {
+                alerts.friendAlert(
+                    "still/$id",
+                    "${person.name} hasn't moved for ${stillFor / 60_000} min",
+                    "Check on them? Tap to see where they are."
+                )
+            }
+        }
+    }
 
     // ---------------------- group chat ----------------------
 
@@ -1566,6 +1639,9 @@ class NearbyManager(
                 it.copy(djOpen = message.djOpen == true, upNext = message.queue.orEmpty())
             }
             NearbyMessage.CHAT -> receiveChat(endpointId, message)
+            NearbyMessage.PING -> message.battery?.let { level ->
+                updateFriend(endpointId) { it.copy(battery = level, charging = message.charging == true) }
+            }
             NearbyMessage.CHAT_ACK -> receiveAck(endpointId, message)
             NearbyMessage.FILE_INFO -> receiveFileInfo(endpointId, message)
             NearbyMessage.SONG_ART -> message.payloadId?.let { id -> message.art?.let { incomingArt[id] = it } }
@@ -1718,7 +1794,10 @@ class NearbyManager(
         keepAliveJob = scope.launch {
             while (_state.value.friends.isNotEmpty()) {
                 delay(KEEP_ALIVE_MS)
-                _state.value.friends.forEach { send(it.endpointId, NearbyMessage(NearbyMessage.PING)) }
+                // (with the battery: friends see it on the radar, and get a warning when it's low)
+                val power = batteryOf(context)
+                val ping = NearbyMessage(NearbyMessage.PING, battery = power?.first, charging = power?.second)
+                _state.value.friends.forEach { send(it.endpointId, ping) }
                 resendUnconfirmed()
             }
         }
@@ -1846,6 +1925,11 @@ class NearbyManager(
         /** the group chat keeps this many messages (this session only) */
         const val MAX_CHAT_MESSAGES = 300
         const val MAX_CHAT_CHARS = 500
+
+        const val KEY_CHECK_MINUTES = "check_minutes"
+        const val CHECK_EVERY_MS = 30_000L
+        /** a friend's battery at or below this: a warning */
+        const val LOW_BATTERY = 15
         const val KEEP_ALIVE_MS = 10_000L
 
         /** someone reconnecting gets the chat of the last half hour (at most this many messages) */

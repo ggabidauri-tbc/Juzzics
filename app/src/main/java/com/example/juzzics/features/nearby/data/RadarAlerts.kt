@@ -123,6 +123,35 @@ class RadarAlerts(private val context: Context) {
         runCatching { NotificationManagerCompat.from(context).cancel(CHAT_NOTIFICATION_ID) }
     }
 
+    /**
+     * "Luka's phone is at 12%", "Luka hasn't moved for 30 min": a buzz and a notification
+     * (one per person and kind: [key]) that opens the radar
+     */
+    @SuppressLint("MissingPermission") // checked in canNotify()
+    fun friendAlert(key: String, title: String, text: String) {
+        vibrate(longArrayOf(0, 200, 120, 200))
+        if (!canNotify()) return
+        ensureChannel()
+        val open = PendingIntent.getActivity(
+            context,
+            9,
+            Intent(context, MainActivity::class.java)
+                .putExtra(OpenRadarRequests.EXTRA_OPEN_RADAR, true)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_music_note)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(open)
+            .build()
+        runCatching { NotificationManagerCompat.from(context).notify(FRIEND_ALERT_ID + (key.hashCode() and 0x3f), notification) }
+    }
+
     /** a meeting point was set: a short buzz */
     fun pin() = vibrate(longArrayOf(0, 120, 80, 120))
 
@@ -175,5 +204,6 @@ class RadarAlerts(private val context: Context) {
         const val CHANNEL_ID = "friends_nearby"
         const val NOTIFICATION_ID = 4350
         const val CHAT_NOTIFICATION_ID = 4351
+        const val FRIEND_ALERT_ID = 4400
     }
 }

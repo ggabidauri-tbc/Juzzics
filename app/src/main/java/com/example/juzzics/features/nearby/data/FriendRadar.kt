@@ -118,7 +118,7 @@ class FriendRadar(
                 val lon = message.lon ?: return true
                 val fix = GeoFix(lat, lon, message.accuracy ?: 50f, SystemClock.elapsedRealtime())
                 state = state.copy(
-                    people = state.people + (personId to RadarPerson(name, fix, relayed)),
+                    people = state.people + (personId to person(personId, name, fix, relayed, message.battery, message.charging)),
                     trails = withTrailPoint(personId, fix),
                 )
             }
@@ -168,8 +168,32 @@ class FriendRadar(
     fun notePosition(personId: String, name: String, lat: Double, lon: Double, accuracy: Float?, relayed: Boolean) {
         val fix = GeoFix(lat, lon, accuracy ?: 50f, SystemClock.elapsedRealtime())
         state = state.copy(
-            people = state.people + (personId to RadarPerson(name, fix, relayed)),
+            people = state.people + (personId to person(personId, name, fix, relayed, null, null)),
             trails = withTrailPoint(personId, fix),
+        )
+    }
+
+    /** where each person last really moved (a spot, and since when), for "hasn't moved" */
+    private val stillAt = mutableMapOf<String, Pair<GeoFix, Long>>()
+
+    /**
+     * [personId] at [fix]: moved (further from their last spot than GPS wobble) or still there.
+     * Battery: the new value, else what we knew
+     */
+    private fun person(personId: String, name: String, fix: GeoFix, relayed: Boolean, battery: Int?, charging: Boolean?): RadarPerson {
+        val previous = state.people[personId]
+        val spot = stillAt[personId]
+        val moved = spot == null || FloatArray(1).also {
+            Location.distanceBetween(spot.first.lat, spot.first.lon, fix.lat, fix.lon, it)
+        }[0] > maxOf(STILL_RADIUS_M, spot.first.accuracyM + fix.accuracyM)
+        if (moved) stillAt[personId] = fix to fix.atElapsedMs
+        return RadarPerson(
+            name = name,
+            fix = fix,
+            relayed = relayed,
+            battery = battery ?: previous?.battery,
+            charging = charging ?: previous?.charging ?: false,
+            stillSinceMs = stillAt[personId]?.second,
         )
     }
 
@@ -312,8 +336,17 @@ class FriendRadar(
         broadcast(fixMessage(fix))
     }
 
-    private fun fixMessage(fix: GeoFix) =
-        NearbyMessage(NearbyMessage.LOCATION, lat = fix.lat, lon = fix.lon, accuracy = fix.accuracyM)
+    private fun fixMessage(fix: GeoFix): NearbyMessage {
+        val power = batteryOf(context)
+        return NearbyMessage(
+            NearbyMessage.LOCATION,
+            lat = fix.lat,
+            lon = fix.lon,
+            accuracy = fix.accuracyM,
+            battery = power?.first,
+            charging = power?.second,
+        )
+    }
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) = onLocation(location)
@@ -361,6 +394,8 @@ class FriendRadar(
 
     private companion object {
         const val UPDATE_MS = 2_000L
+        /** moving less than this (or than GPS wobble) counts as not moving */
+        const val STILL_RADIUS_M = 30f
         const val POCKET_UPDATE_MS = 10_000L
         /** a trail gets a new point after moving this far */
         const val TRAIL_STEP_M = 5f
@@ -371,3 +406,10 @@ class FriendRadar(
         const val SEND_EVERY_MS = 3_000L
     }
 }
+
+/** this phone's battery (0..100) and whether it's charging; null if unknown */
+internal fun batteryOf(context: Context): Pair<Int, Boolean>? = runCatching {
+    val manager = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+    val level = manager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    if (level !in 0..100) null else level to manager.isCharging
+}.getOrNull()
