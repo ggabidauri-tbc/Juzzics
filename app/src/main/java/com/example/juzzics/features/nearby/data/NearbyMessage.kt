@@ -52,6 +52,21 @@ data class NearbyMessage(
     val queue: List<QueueEntry>? = null,
     /** MIC_START: the live voice's sample rate */
     val sampleRate: Int? = null,
+    /** LOCATION: GPS position and how exact it is (meters) */
+    val lat: Double? = null,
+    val lon: Double? = null,
+    val accuracy: Float? = null,
+    /** HELLO: the sender's lasting phone id; a fresh pairing secret; a challenge to answer with PROOF */
+    val phoneId: String? = null,
+    val secret: String? = null,
+    val nonce: String? = null,
+    /** PROOF: HMAC of the challenge with the pair's secret */
+    val proof: String? = null,
+    /** relayed messages: who said it first (phone id and name), their counter, how many phones it passed */
+    val origin: String? = null,
+    val originName: String? = null,
+    val seq: Long? = null,
+    val hops: Int? = null,
 ) {
     companion object {
         /** "send me your songs" */
@@ -97,6 +112,28 @@ data class NearbyMessage(
         const val MIC_START = "mic_start"
         /** sing-along: singer "I stopped" / listener "I turned your mic off" */
         const val MIC_STOP = "mic_stop"
+
+        /** friend radar: "I'm here" / "I stopped sharing where I am" */
+        const val LOCATION = "location"
+        const val LOCATION_OFF = "location_off"
+
+        /** "this is me (lasting id)"; with a nonce: "prove you're who you were" */
+        const val HELLO = "hello"
+        /** the answer to HELLO's challenge */
+        const val PROOF = "proof"
+        /** "I'm disconnecting on purpose, don't reconnect" */
+        const val BYE = "bye"
+        /** "I don't recognize you (any more)": forget the pairing, compare codes next time */
+        const val UNPAIRED = "unpaired"
+
+        /** meeting point: "meet here" ([lat] / [lon]) / "never mind" */
+        const val PIN = "pin"
+        const val PIN_CLEAR = "pin_clear"
+        /** "come to me, I'm here" ([lat] / [lon]) */
+        const val COME_TO_ME = "come_to_me"
+
+        /** MIC_START: a walkie-talkie message (to everyone, played over the music, music ducked) */
+        const val PURPOSE_WALKIE = "walkie"
 
         /** Car DJ: "you can (not) add songs to my queue, here's what's in it" */
         const val DJ_STATE = "dj_state"

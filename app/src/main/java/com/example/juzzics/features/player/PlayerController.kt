@@ -120,6 +120,9 @@ class PlayerController(
     /** 1f is normal; party mode nudges it a little to stay in sync with the host phone */
     fun setSpeed(speed: Float) = withController { it.setPlaybackSpeed(speed) }
 
+    /** music quieter while a friend talks on the walkie-talkie (false: back to normal) */
+    fun duck(on: Boolean) = withController { it.volume = if (on) DUCKED_VOLUME else 1f }
+
     fun next() = withController {
         if (it.hasNextMediaItem()) {
             it.seekToNextMediaItem()
@@ -344,3 +347,6 @@ class PlayerController(
         icon = mediaMetadata.artworkUri ?: "".toUri(),
     )
 }
+
+/** walkie-talkie: how loud the music stays while a friend talks */
+private const val DUCKED_VOLUME = 0.25f

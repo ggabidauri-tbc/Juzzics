@@ -15,7 +15,12 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- sing-along keeps working with the screen off (microphone service, Wi-Fi / CPU kept awake) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- friend radar: sharing your location keeps going with the screen off (started by you, with a notification) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- friend radar: "come to me" buzzes and shows a notification -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- trip prep checks for internet before looking up lyrics -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -102,7 +107,12 @@
             android:name=".features.nearby.data.SingingService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
-            <!-- sharing Juzzics itself with friends (share sheet: Quick Share, Bluetooth...) -->
+            <!-- friend radar: location sharing with the screen off -->
+        <service
+            android:name=".features.nearby.data.LocationSharingService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+        <!-- sharing Juzzics itself with friends (share sheet: Quick Share, Bluetooth...) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

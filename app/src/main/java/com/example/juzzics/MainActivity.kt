@@ -21,6 +21,9 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import com.example.juzzics.navigation.Screen
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -36,6 +39,7 @@ import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.model.toDomain
 import com.example.juzzics.features.onboarding.AudioPermissionGate
 import com.example.juzzics.features.player.OpenPlayerRequests
+import com.example.juzzics.features.nearby.data.OpenRadarRequests
 import com.example.juzzics.features.player.ui.MiniPlayerSpace
 import com.example.juzzics.features.player.ui.PlayerOverlay
 import com.example.juzzics.features.player.ui.vm.PlayerVM
@@ -82,6 +86,11 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(EXTRA_OPEN_PLAYER)
             OpenPlayerRequests.request()
         }
+        // "come to me" notification: straight to the friend radar
+        if (intent?.getBooleanExtra(OpenRadarRequests.EXTRA_OPEN_RADAR, false) == true) {
+            intent.removeExtra(OpenRadarRequests.EXTRA_OPEN_RADAR)
+            OpenRadarRequests.request()
+        }
     }
 }
 
@@ -96,6 +105,15 @@ private fun JuzzicsRoot() {
     val playlistsVm: PlaylistsVM = koinViewModel()
     val snackbarHost = remember { SnackbarHostState() }
     AppMessages.Collect(snackbarHost)
+
+    // "open the friend radar" (a notification, a message's "Show"): go to the Nearby tab
+    val radarRequests by OpenRadarRequests.count.collectAsState()
+    LaunchedEffect(radarRequests) {
+        if (radarRequests > OpenRadarRequests.handledByNavigation) {
+            OpenRadarRequests.handledByNavigation = radarRequests
+            navController.navigateToTab(Screen.NearbyScreen.route)
+        }
+    }
 
     val hasSong = playerVm.stateList.valueOf(PlayerVM.CURRENT) != null
     // the mini player needs free space at the bottom of every tab

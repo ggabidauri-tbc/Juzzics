@@ -40,6 +40,8 @@ data class ConnectedFriend(
     val djOpen: Boolean = false,
     /** their "Up next" (when [djOpen]) */
     val upNext: List<QueueEntry> = emptyList(),
+    /** their phone's lasting id (the endpoint id changes with every connection); null until it says hello */
+    val phoneId: String? = null,
 )
 
 /** A song in a Car DJ queue, and who added it (blank: the phone's owner). */
@@ -74,6 +76,16 @@ data class NearbyState(
     val singer: String? = null,
     /** how loud a singing friend's voice plays here (1 = as recorded) */
     val micGain: Float = 2f,
+    /** friend radar: where everyone is */
+    val radar: RadarState = RadarState(),
+    /** friends who dropped out of range: this phone looks for them and reconnects by itself */
+    val reconnecting: List<String> = emptyList(),
+    /** phones paired before (they reconnect without comparing codes) */
+    val rememberedPhones: Int = 0,
+    /** walkie-talkie: this phone's mic is live to everyone connected */
+    val talking: Boolean = false,
+    /** walkie-talkie: a friend talking right now: their name */
+    val talker: String? = null,
     val error: String? = null,
 )
 
@@ -161,4 +173,57 @@ enum class NearbyPanel(val title: String) {
     SING("Sing along"),
     SHOUT_OUT("Shout-out"),
     RECEIVED("Songs friends sent"),
+    RADAR("Friend radar"),
 }
+
+/** A point on a trail. */
+data class GeoPoint(val lat: Double, val lon: Double)
+
+/** A GPS position, and when this phone got it (elapsedRealtime). */
+data class GeoFix(val lat: Double, val lon: Double, val accuracyM: Float, val atElapsedMs: Long)
+
+/** Someone on the radar: a connected friend, or someone further away whose position came through friends' phones. */
+data class RadarPerson(
+    val name: String,
+    val fix: GeoFix,
+    /** came through other phones (not connected to this one directly) */
+    val relayed: Boolean,
+)
+
+/** A meeting point someone set ("meet here"). */
+data class MeetingPin(val setBy: String, val lat: Double, val lon: Double, val mine: Boolean)
+
+/** A friend asked you to come to them. */
+data class ComeToMe(val from: String, val personId: String, val lat: Double, val lon: Double, val atElapsedMs: Long)
+
+/** Friend radar: this phone's position, everyone else's, and whether this phone shares its own. */
+data class RadarState(
+    /** friends see this phone's position */
+    val sharing: Boolean = false,
+    /** sharing stops by itself at this time (System.currentTimeMillis); null = until turned off */
+    val sharingUntilMs: Long? = null,
+    val me: GeoFix? = null,
+    /**
+     * everyone sharing where they are, by person id (their phone's lasting id). Kept after they
+     * drop out of range: their last known position, getting older
+     */
+    val people: Map<String, RadarPerson> = emptyMap(),
+    /** the phone's location is turned off (quick settings) */
+    val locationOff: Boolean = false,
+    /** the compass says it's unsure (needs a figure-8 wave to calibrate) */
+    val compassUnreliable: Boolean = false,
+    /** where everyone walked ([ME] = this phone, else the person id), oldest first */
+    val trails: Map<String, List<GeoPoint>> = emptyMap(),
+    /** meeting points, by who set them ([ME] = this phone) */
+    val pins: Map<String, MeetingPin> = emptyMap(),
+    /** others' meeting points hidden on this phone (shown again with "Show hidden", or when moved) */
+    val hiddenPins: Set<String> = emptySet(),
+    /** the latest "come to me" (until dismissed) */
+    val comeToMe: ComeToMe? = null,
+) {
+    companion object {
+        /** [trails] / [pins] key of this phone */
+        const val ME = "me"
+    }
+}
+

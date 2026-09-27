@@ -7,6 +7,8 @@ import com.example.juzzics.common.base.viewModel.StateKey
 import com.example.juzzics.common.messages.AppMessages
 import com.example.juzzics.features.nearby.data.BlendMaker
 import com.example.juzzics.features.nearby.data.NearbyManager
+import com.example.juzzics.features.nearby.data.OfflineMaps
+import com.example.juzzics.features.nearby.data.OfflineMapsState
 import com.example.juzzics.features.nearby.data.ReceivedSong
 import com.example.juzzics.features.nearby.data.ReceivedSongs
 import com.example.juzzics.features.player.OpenPlayerRequests
@@ -21,13 +23,15 @@ import com.example.juzzics.features.nearby.domain.RemoteSong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.maplibre.android.geometry.LatLngBounds
 
 class NearbyVM(
     private val nearby: NearbyManager,
     private val received: ReceivedSongs,
     private val player: PlayerController,
+    private val offlineMaps: OfflineMaps,
 ) : BaseViewModel(
-    listOf(NEARBY, OPEN_FRIEND, FRIEND_QUERY, PLAY_TARGET, SEND_MODE, SEND_TO_QUEUE, MY_SONGS, RECEIVED, BLEND, SHOW_BLEND, PANEL, FRIEND_PAGE, SHOW_SETTINGS)
+    listOf(NEARBY, OPEN_FRIEND, FRIEND_QUERY, PLAY_TARGET, SEND_MODE, SEND_TO_QUEUE, MY_SONGS, RECEIVED, BLEND, SHOW_BLEND, PANEL, FRIEND_PAGE, SHOW_SETTINGS, HEADING, RADAR_AS_MAP, OFFLINE_MAPS)
 ) {
 
     companion object {
@@ -54,6 +58,12 @@ class NearbyVM(
         /** a connected friend's page (endpoint id) */
         val FRIEND_PAGE = StateKey<String?>("friendPage", null)
         val SHOW_SETTINGS = StateKey("showSettings", false)
+        /** friend radar: where the phone points (degrees from north), null without a compass */
+        val HEADING = StateKey<Float?>("heading", null)
+        /** the radar page shows a map instead of the radar */
+        val RADAR_AS_MAP = StateKey("radarAsMap", false)
+        /** map areas saved for offline use, and the one downloading */
+        val OFFLINE_MAPS = StateKey("offlineMaps", OfflineMapsState())
     }
 
     /** "Reshuffle" makes a different mix */
@@ -70,6 +80,8 @@ class NearbyVM(
     init {
         nearby.state.collectIn(NEARBY)
         received.songs.collectIn(RECEIVED)
+        nearby.radarHeading.collectIn(HEADING)
+        offlineMaps.state.collectIn(OFFLINE_MAPS)
     }
 
     override fun onAction(action: Action) {
@@ -150,6 +162,22 @@ class NearbyVM(
             is OpenPanelAction -> PANEL(action.panel)
             is OpenFriendPageAction -> FRIEND_PAGE(action.endpointId)
             is ShowSettingsAction -> SHOW_SETTINGS(action.show)
+            is LocationSharingAction -> nearby.setLocationSharing(action.on, action.forMs)
+            is RadarVisibleAction -> nearby.setRadarVisible(action.visible)
+            is ClearTrailsAction -> nearby.clearTrails()
+            is RadarModeAction -> RADAR_AS_MAP(action.map)
+            is RefreshMapAreasAction -> offlineMaps.refresh()
+            is SaveMapAreaAction -> offlineMaps.download(action.bounds, action.name)
+            is CancelMapDownloadAction -> offlineMaps.cancelDownload()
+            is DeleteMapAreaAction -> offlineMaps.delete(action.id)
+            is SetMeetingPointAction -> nearby.setMeetingPoint(action.lat, action.lon)
+            is ClearMeetingPointAction -> nearby.clearMeetingPoint()
+            is HideMeetingPointAction -> nearby.hideMeetingPoint(action.personId)
+            is ShowHiddenPinsAction -> nearby.showHiddenMeetingPoints()
+            is CallOverAction -> nearby.callFriendsOver()
+            is DismissComeToMeAction -> nearby.dismissComeToMe()
+            is TalkAction -> if (action.on) nearby.startTalking() else nearby.stopTalking()
+            is ForgetRememberedAction -> nearby.forgetRememberedPhones()
             is FindFriendsAction -> {
                 // visible and looking at once: nobody has to understand who shares and who looks
                 nearby.setSharing(true)
@@ -203,6 +231,31 @@ class NearbyVM(
     /** null closes it */
     data class OpenFriendPageAction(val endpointId: String?) : Action
     data class ShowSettingsAction(val show: Boolean) : Action
+    /** friend radar: share this phone's position with connected friends */
+    data class LocationSharingAction(val on: Boolean, val forMs: Long? = null) : Action
+    /** the radar is on screen (GPS + compass run only then, unless sharing) */
+    data class RadarVisibleAction(val visible: Boolean) : Action
+    data object ClearTrailsAction : Action
+    /** the radar page shows a map (true) or the radar (false) */
+    data class RadarModeAction(val map: Boolean) : Action
+    data object RefreshMapAreasAction : Action
+    /** saves [bounds] (what's on screen) so the map works there without internet */
+    data class SaveMapAreaAction(val bounds: LatLngBounds, val name: String) : Action
+    data object CancelMapDownloadAction : Action
+    data class DeleteMapAreaAction(val id: Long) : Action
+    /** "meet here": everyone connected sees it */
+    data class SetMeetingPointAction(val lat: Double, val lon: Double) : Action
+    data object ClearMeetingPointAction : Action
+    /** someone else's meeting point, hidden on this phone */
+    data class HideMeetingPointAction(val personId: String) : Action
+    data object ShowHiddenPinsAction : Action
+    /** "come to me": friends' phones buzz and point here */
+    data object CallOverAction : Action
+    data object DismissComeToMeAction : Action
+    /** walkie-talkie: pressed (true) / let go (false) */
+    data class TalkAction(val on: Boolean) : Action
+    /** paired phones compare codes again next time */
+    data object ForgetRememberedAction : Action
     /** this phone becomes visible and looks for friends */
     data object FindFriendsAction : Action
 }

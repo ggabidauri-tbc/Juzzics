@@ -4,7 +4,9 @@ import com.example.juzzics.features.lyrics.data.service.LrclibService
 import com.example.juzzics.features.lyrics.data.service.LyricsService
 import com.example.juzzics.features.lyrics.util.LRCLIB_BASE_URL
 import com.example.juzzics.features.lyrics.util.LYRICS_BASE_URL
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import retrofit2.Retrofit
@@ -15,14 +17,27 @@ private const val LRCLIB = "lrclib"
 
 val serviceModule = module {
     single(named(LYRICS_OVH)) {
+        // the fallback, often slow: give up quickly instead of holding up trip prep
+        val client = OkHttpClient.Builder()
+            .callTimeout(6, TimeUnit.SECONDS)
+            .build()
         Retrofit.Builder()
             .baseUrl(LYRICS_BASE_URL)
+            .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
     single(named(LRCLIB)) {
         // LRCLIB asks apps to say who they are
+        // OkHttp allows only 5 requests to one site at a time by default: trip prep sends more
+        // (several songs, several searches each). Still polite to a free service.
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 24
+            maxRequestsPerHost = 12
+        }
         val client = OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .callTimeout(15, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()

@@ -1,10 +1,26 @@
 package com.example.juzzics.features.nearby.ui
 
 import android.content.Intent
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.FilterChip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -162,7 +178,8 @@ fun BlendCard(friendNames: List<String>, onOpen: () -> Unit) {
 }
 
 /**
- * hold the button and talk; letting go sends it to everyone connected (sliding off cancels).
+ * Hold the big button (low on the screen, under your thumb) and talk; letting go sends it to
+ * everyone connected, wherever the finger is. Slide up to cancel.
  * [hasPermission] / [askPermission]: the microphone.
  */
 @Composable
@@ -173,54 +190,111 @@ fun ShoutOutCard(
     askPermission: () -> Unit,
     onStart: () -> Unit,
     onStop: (send: Boolean) -> Unit,
+    hasFriends: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
     val permitted by rememberUpdatedState(hasPermission)
     val ask by rememberUpdatedState(askPermission)
     val start by rememberUpdatedState(onStart)
     val stop by rememberUpdatedState(onStop)
-    Card(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Shout-out", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    when {
-                        recording -> "Recording… let go to send"
-                        playingFrom != null -> "$playingFrom is talking…"
-                        else -> "Hold to talk: it plays on everyone's phone over the music"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (recording || playingFrom != null) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Box(
-                Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                    )
-                    .pointerInput(Unit) {
-                        detectTapGestures(onPress = {
-                            if (!permitted()) {
-                                ask()
-                                return@detectTapGestures
-                            }
-                            start()
-                            // true: let go on the button (send); false: slid away (cancel)
-                            stop(tryAwaitRelease())
-                        })
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Mic,
-                    contentDescription = "Hold to talk",
-                    tint = if (recording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
+    val canTalk by rememberUpdatedState(hasFriends)
+    /** the finger slid up far enough: letting go now cancels */
+    var cancelling by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val cancelDistance = with(density) { 96.dp.toPx() }
+
+    Column(
+        modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "Say something to everyone: it plays on their phones over the music.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+        if (!hasFriends) {
+            Text(
+                "Connect to a friend first (Nearby > Find friends).",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 12.dp)
+            )
         }
+        Spacer(Modifier.weight(1f))
+        Text(
+            when {
+                recording && cancelling -> "Let go to cancel"
+                recording -> "Recording… let go to send · slide up to cancel"
+                playingFrom != null -> "$playingFrom is talking…"
+                else -> "Hold to talk"
+            },
+            style = MaterialTheme.typography.titleMedium,
+            color = when {
+                recording && cancelling -> MaterialTheme.colorScheme.error
+                recording || playingFrom != null -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurface
+            },
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(bottom = 20.dp)
+        )
+        Box(
+            Modifier
+                .size(112.dp)
+                .clip(CircleShape)
+                .background(
+                    when {
+                        recording && cancelling -> MaterialTheme.colorScheme.surfaceContainerHighest
+                        recording -> MaterialTheme.colorScheme.error
+                        hasFriends -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    }
+                )
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        if (!canTalk) return@awaitEachGesture
+                        if (!permitted()) {
+                            ask()
+                            return@awaitEachGesture
+                        }
+                        start()
+                        var cancel = false
+                        try {
+                            // follow the finger anywhere on screen until it lifts
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                cancel = down.position.y - change.position.y > cancelDistance
+                                cancelling = cancel
+                                change.consume()
+                                if (!change.pressed) break
+                            }
+                        } finally {
+                            cancelling = false
+                            stop(!cancel)
+                        }
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                if (recording && cancelling) Icons.Filled.Close else Icons.Filled.Mic,
+                contentDescription = "Hold to talk",
+                tint = when {
+                    recording && cancelling -> MaterialTheme.colorScheme.error
+                    recording -> MaterialTheme.colorScheme.onError
+                    hasFriends -> MaterialTheme.colorScheme.onPrimary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.size(48.dp)
+            )
+        }
+        Spacer(Modifier.height(48.dp))
     }
 }
 
@@ -352,7 +426,8 @@ private fun BlendRow(title: String, subtitle: String, tag: String, durationMs: L
 
 /**
  * Sing along: pick a friend's phone (the one playing the music) and sing, the voice plays
- * live on it over the music. On that phone: who's singing, how loud, and a way to stop it.
+ * live on it over the music. A big button low on the screen: tap to go live, tap to stop.
+ * On the phone playing it: who's singing, how loud, and a way to stop it.
  */
 @Composable
 fun SingCard(
@@ -366,65 +441,161 @@ fun SingCard(
     onStop: () -> Unit,
     onStopSinger: () -> Unit,
     onGain: (Float) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Card(
-        Modifier.fillMaxWidth(),
-        colors = if (singingTo != null || singer != null) {
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
-        } else CardDefaults.cardColors()
+    // whose phone to sing on: the only friend, or the one picked
+    var picked by remember { mutableStateOf<String?>(null) }
+    val target = friends.find { it.first == picked } ?: friends.firstOrNull()
+    val live = singingTo != null
+    val liveName = friends.find { it.first == singingTo }?.second
+
+    Column(
+        modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.MicExternalOn, contentDescription = null)
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .padding(horizontal = 12.dp)
-                ) {
-                    Text("Sing along", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        when {
-                            singingTo != null -> "You're live on ${friends.find { it.first == singingTo }?.second?.let { "$it's" } ?: "their"} phone. Sing!"
-                            else -> "Your phone becomes a mic: your voice plays live on the phone playing the music"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+        Text(
+            "Your phone becomes a mic: your voice plays live on the phone playing the music.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp)
+        )
 
-            if (singingTo != null) {
-                Text(
-                    "Hold the phone close like a mic, and stay a few steps from the speaker (too close, it squeals)",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop singing") }
-            } else {
-                friends.forEach { (endpointId, name) ->
-                    OutlinedButton(
-                        onClick = { if (hasPermission()) onStart(endpointId) else askPermission() },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Sing on $name's phone", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                }
-            }
-
-            // a friend sings through this phone
-            if (singer != null) {
-                Text("$singer is singing on this phone", style = MaterialTheme.typography.titleSmall)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Voice", style = MaterialTheme.typography.labelLarge)
-                    Slider(
-                        value = micGain,
-                        onValueChange = onGain,
-                        valueRange = 0.5f..4f,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 8.dp)
-                    )
-                    TextButton(onClick = onStopSinger) { Text("Mic off") }
+        // a friend sings through this phone
+        if (singer != null) {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("$singer is singing on this phone", style = MaterialTheme.typography.titleSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Voice", style = MaterialTheme.typography.labelLarge)
+                        Slider(
+                            value = micGain,
+                            onValueChange = onGain,
+                            valueRange = 0.5f..4f,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                        )
+                        TextButton(onClick = onStopSinger) { Text("Mic off") }
+                    }
                 }
             }
         }
+
+        if (friends.isEmpty()) {
+            Text(
+                "Connect to a friend first (Nearby > Find friends).",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        } else if (!live && friends.size > 1) {
+            Text(
+                "Sing on",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(top = 20.dp, bottom = 4.dp)
+            )
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                friends.forEach { (endpointId, name) ->
+                    FilterChip(
+                        selected = endpointId == target?.first,
+                        onClick = { picked = endpointId },
+                        label = { Text("$name's phone", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        if (live) {
+            Text(
+                "Hold the phone close like a mic, and stay a few steps from the speaker (too close, it squeals).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+        }
+        Text(
+            when {
+                live -> "You're live on ${liveName?.let { "$it's" } ?: "their"} phone · tap to stop"
+                target != null -> "Tap to sing on ${target.second}'s phone"
+                else -> "Sing along"
+            },
+            style = MaterialTheme.typography.titleMedium,
+            color = if (live) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(bottom = 20.dp)
+        )
+
+        // a ring that breathes while you're live
+        val pulse = rememberInfiniteTransition(label = "live")
+        val ring by pulse.animateFloat(
+            initialValue = 1f,
+            targetValue = 1.25f,
+            animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+            label = "ring"
+        )
+        Box(Modifier.size(140.dp), contentAlignment = Alignment.Center) {
+            if (live) {
+                Box(
+                    Modifier
+                        .size(112.dp)
+                        .graphicsLayer {
+                            scaleX = ring
+                            scaleY = ring
+                        }
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.2f))
+                )
+            }
+            Box(
+                Modifier
+                    .size(112.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when {
+                            live -> MaterialTheme.colorScheme.error
+                            target != null -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        }
+                    )
+                    .clickable(enabled = live || target != null) {
+                        when {
+                            live -> onStop()
+                            !hasPermission() -> askPermission()
+                            target != null -> onStart(target.first)
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (live) Icons.Filled.Stop else Icons.Filled.MicExternalOn,
+                    contentDescription = if (live) "Stop singing" else "Start singing",
+                    tint = when {
+                        live -> MaterialTheme.colorScheme.onError
+                        target != null -> MaterialTheme.colorScheme.onPrimary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(52.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(40.dp))
     }
 }
 

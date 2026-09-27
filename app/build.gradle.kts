@@ -119,6 +119,8 @@ dependencies {
 
     // play and control music on nearby phones, no internet needed
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    // friend map: maps that work offline (downloaded areas), OpenFreeMap tiles
+    implementation("org.maplibre.gl:android-sdk:13.6.1")
 
     // home-screen widget
     implementation("androidx.glance:glance-appwidget:1.1.1")

@@ -1,5 +1,7 @@
 package com.example.juzzics.features.nearby.data
 
+import com.example.juzzics.common.messages.AppMessage
+import com.example.juzzics.common.messages.AppMessages
 import android.content.ContentUris
 import android.graphics.Bitmap
 import android.os.ParcelFileDescriptor
@@ -81,9 +83,16 @@ class NearbyManager(
     private val gson = Gson()
     private val prefs = context.getSharedPreferences("nearby", Context.MODE_PRIVATE)
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    /** this phone's lasting id, and the phones it paired with */
+    private val book = FriendBook(context)
+    private val alerts = RadarAlerts(context)
 
     private val _state = MutableStateFlow(
-        NearbyState(deviceName = savedOrDefaultName(), letFriendsSave = prefs.getBoolean(KEY_LET_SAVE, true))
+        NearbyState(
+            deviceName = savedOrDefaultName(),
+            letFriendsSave = prefs.getBoolean(KEY_LET_SAVE, true),
+            rememberedPhones = book.count,
+        )
     )
     val state: StateFlow<NearbyState> = _state.asStateFlow()
 
@@ -115,14 +124,138 @@ class NearbyManager(
 
     private val shoutOuts = ShoutOuts(context)
 
+    /** positions, meeting points and "come to me" hop on through friends' phones */
+    private val mesh = Mesh(myId = { book.myId }, myName = ::displayName)
+
+    private val radar = FriendRadar(
+        context = context,
+        broadcast = ::broadcastMesh,
+        sendTo = { endpointId, message -> send(endpointId, mesh.stamp(message)) },
+        nameOf = ::friendName,
+        onState = { radar -> _state.update { it.copy(radar = radar) } },
+        onEvent = ::onRadarEvent,
+    )
+
+    /** says [message] to everyone connected, who pass it on (see [Mesh]) */
+    private fun broadcastMesh(message: NearbyMessage) {
+        val stamped = mesh.stamp(message)
+        _state.value.friends.forEach { send(it.endpointId, stamped) }
+    }
+
+    private fun onRadarEvent(event: RadarEvent) {
+        when (event) {
+            is RadarEvent.PinSet -> {
+                alerts.pin()
+                AppMessages.show(AppMessage("${event.name} set a meeting point", "Show", { OpenRadarRequests.request() }))
+            }
+            is RadarEvent.CalledOver -> {
+                val distance = event.distanceM?.let(::formatMeters)
+                alerts.comeToMe(event.name, distance)
+                AppMessages.show(
+                    AppMessage(
+                        "${event.name} asks you to come to them" + (distance?.let { " · $it" } ?: ""),
+                        "Show",
+                        { OpenRadarRequests.request() },
+                        long = true,
+                    )
+                )
+            }
+        }
+    }
+
+    /** "meet here" at [lat] / [lon], for everyone */
+    fun setMeetingPoint(lat: Double, lon: Double) = radar.setPin(lat, lon)
+
+    fun clearMeetingPoint() = radar.clearPin()
+
+    fun hideMeetingPoint(personId: String) = radar.hidePin(personId)
+
+    fun showHiddenMeetingPoints() = radar.showHiddenPins()
+
+    /** friends' phones buzz and point to this one */
+    fun callFriendsOver() {
+        when {
+            _state.value.friends.isEmpty() -> AppMessages.show("Connect to a friend first")
+            radar.callOver() -> AppMessages.show("Sent: friends' phones buzz and point to you")
+            else -> AppMessages.show("Your position isn't known yet: wait for GPS, then try again")
+        }
+    }
+
+    fun dismissComeToMe() = radar.dismissComeToMe()
+
+    /** friend radar: where this phone points (degrees from north), while the radar is open */
+    val radarHeading: StateFlow<Float?> = radar.heading
+
+    private var sharingTimer: Job? = null
+    private var aloneTimer: Job? = null
+
+    /**
+     * friend radar: connected friends see where this phone is, also with the screen off
+     * (a notification shows it). [forMs]: stops by itself after that long; null = until turned off
+     */
+    fun setLocationSharing(on: Boolean, forMs: Long? = null) {
+        sharingTimer?.cancel()
+        aloneTimer?.cancel()
+        if (!on) {
+            radar.setSharing(false)
+            LocationSharingService.stop(context)
+            return
+        }
+        radar.setSharing(true, untilMs = forMs?.let { System.currentTimeMillis() + it })
+        LocationSharingService.start(context)
+        if (forMs != null) {
+            sharingTimer = scope.launch {
+                delay(forMs)
+                setLocationSharing(false)
+                AppMessages.show("Stopped sharing your location (time's up)")
+            }
+        }
+    }
+
+    /** forgets everyone's trails (friend map) */
+    fun clearTrails() = radar.clearTrails()
+
+    /** friend radar on screen: GPS + compass on */
+    fun setRadarVisible(visible: Boolean) = radar.setVisible(visible)
+
     private val liveMic = LiveMic(context)
     /** live voice streams announced by MIC_START: payload id to sample rate */
     private val micStreams = mutableMapOf<Long, Int>()
+    /** the ones of them that are walkie-talkie messages */
+    private val walkieStreams = mutableSetOf<Long>()
     /** who's singing through this phone */
     private var singerId: String? = null
 
     /** names of phones we're (becoming) connected to */
     private val names = mutableMapOf<String, String>()
+    /** endpoint id to the phone's lasting id */
+    private val phoneIds = mutableMapOf<String, String>()
+    /** connections accepted without comparing codes (a paired phone): not friends until they prove it */
+    private val autoAccepted = mutableSetOf<String>()
+    /** the question each unproven phone has to answer */
+    private val myNonces = mutableMapOf<String, String>()
+    private val probation = mutableMapOf<String, Job>()
+    /** paired friends who dropped out of range (phone id to when), to reconnect to */
+    private val lost = mutableMapOf<String, Long>()
+    /** said BYE: disconnecting on purpose, don't look for them */
+    private val leaving = mutableSetOf<String>()
+    /**
+     * paired phones that failed to prove who they are: the next connection compares codes (kept
+     * in memory only, so a stranger copying an id can't erase a real pairing)
+     */
+    private val compareCodes = mutableSetOf<String>()
+    /** reconnect requests on their way (phone ids) */
+    private val reconnecting = mutableSetOf<String>()
+    private var reconnectJob: Job? = null
+    /** the user turned "Visible to friends" off: reconnecting only looks, it doesn't advertise */
+    private var hiddenByUser = false
+    /** discovery wanted by the user ("Find friends") / by reconnecting, and running */
+    private var userSearching = false
+    private var reconnectScanning = false
+    private var discovering = false
+    /** walkie-talkie: who's talking through this phone, and the talk time limit */
+    private var talkerId: String? = null
+    private var talkLimit: Job? = null
     /** connection requests this phone turned down, so we don't report them as "declined" */
     private val rejectedByMe = mutableSetOf<String>()
     private var advertisingInFlight = false
@@ -157,6 +290,7 @@ class NearbyManager(
 
     /** on: friends nearby can find this phone, browse its songs and play them here */
     fun setSharing(on: Boolean) {
+        hiddenByUser = !on
         if (on == _state.value.sharing) return
         if (on) startAdvertising() else {
             client.stopAdvertising()
@@ -168,7 +302,7 @@ class NearbyManager(
         if (advertisingInFlight) return // a double tap on the switch
         advertisingInFlight = true
         val options = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
-        client.startAdvertising(displayName(), SERVICE_ID, connectionCallback, options)
+        client.startAdvertising(advertisedName(), SERVICE_ID, connectionCallback, options)
             .addOnSuccessListener { _state.update { it.copy(sharing = true, error = null) } }
             .addOnFailureListener { e ->
                 if (e.statusCode() == ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) {
@@ -185,37 +319,142 @@ class NearbyManager(
 
     /** looks for friends' phones for a minute (searching uses battery) */
     fun startSearching() {
-        if (discoveryInFlight) return
-        discoveryInFlight = true
-        _state.update { it.copy(found = emptyList(), error = null) }
-        val options = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
-        client.startDiscovery(SERVICE_ID, discoveryCallback, options)
-            .addOnSuccessListener { searchingStarted() }
-            .addOnFailureListener { e ->
-                if (e.statusCode() == ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) searchingStarted()
-                else _state.update { it.copy(searching = false, error = "Couldn't search. ${e.explain()}") }
-            }
-            .addOnCompleteListener { discoveryInFlight = false }
-    }
-
-    private fun searchingStarted() {
-        _state.update { it.copy(searching = true) }
+        userSearching = true
+        _state.update { it.copy(found = emptyList(), error = null, searching = true) }
         stopSearchJob?.cancel()
         stopSearchJob = scope.launch {
             delay(SEARCH_DURATION_MS)
             stopSearching()
         }
+        if (discovering) {
+            // already looking (reconnecting): start over, so phones seen before show up in the list
+            client.stopDiscovery()
+            discovering = false
+        }
+        refreshDiscovery()
     }
 
     fun stopSearching() {
         stopSearchJob?.cancel()
-        client.stopDiscovery()
+        userSearching = false
         _state.update { it.copy(searching = false) }
+        refreshDiscovery()
+    }
+
+    /** discovery runs while the user searches or a lost friend is being looked for */
+    private fun refreshDiscovery() {
+        val wanted = userSearching || reconnectScanning
+        if (wanted && !discovering && !discoveryInFlight) {
+            discoveryInFlight = true
+            val options = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
+            client.startDiscovery(SERVICE_ID, discoveryCallback, options)
+                .addOnSuccessListener { discovering = true }
+                .addOnFailureListener { e ->
+                    if (e.statusCode() == ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) {
+                        discovering = true
+                    } else if (userSearching) {
+                        userSearching = false
+                        stopSearchJob?.cancel()
+                        _state.update { it.copy(searching = false, error = "Couldn't search. ${e.explain()}") }
+                    }
+                }
+                .addOnCompleteListener {
+                    discoveryInFlight = false
+                    // turned off meanwhile
+                    if (!userSearching && !reconnectScanning && discovering) refreshDiscovery()
+                }
+        } else if (!wanted && discovering) {
+            client.stopDiscovery()
+            discovering = false
+        }
+    }
+
+    // ---------------------- reconnecting ----------------------
+
+    /**
+     * Paired friends who dropped out (walked out of range): look for them in bursts (20 s of
+     * searching a minute, battery), for [RECONNECT_WINDOW_MS], or as long as location sharing
+     * is on (a hike). A found one reconnects without codes.
+     */
+    private fun updateReconnect() {
+        val now = System.currentTimeMillis()
+        if (!_state.value.radar.sharing) lost.entries.removeAll { now - it.value > RECONNECT_WINDOW_MS }
+        val connected = _state.value.friends.mapNotNull { it.phoneId }.toSet()
+        lost.keys.removeAll { it in connected || book.known(it) == null }
+        _state.update { state -> state.copy(reconnecting = lost.keys.mapNotNull { book.known(it)?.name }) }
+        if (lost.isEmpty()) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+            if (reconnectScanning) {
+                reconnectScanning = false
+                refreshDiscovery()
+            }
+            return
+        }
+        // they have to find us too
+        if (!_state.value.sharing && !hiddenByUser) startAdvertising()
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            while (lost.isNotEmpty()) {
+                reconnectScanning = true
+                refreshDiscovery()
+                delay(RECONNECT_SCAN_MS)
+                reconnectScanning = false
+                refreshDiscovery()
+                delay(RECONNECT_PAUSE_MS)
+                updateReconnect()
+            }
+        }
+    }
+
+    /** a lost friend showed up: one of the two phones asks (the other a bit later, if nothing happens) */
+    private fun reconnectTo(endpointId: String, phoneId: String) {
+        if (phoneId in reconnecting) return
+        reconnecting += phoneId
+        scope.launch {
+            if (book.myId > phoneId) delay(RECONNECT_SECOND_ASK_MS)
+            if (phoneId in lost) {
+                client.requestConnection(advertisedName(), endpointId, connectionCallback)
+                    .addOnCompleteListener { reconnecting -= phoneId }
+            } else reconnecting -= phoneId
+        }
+    }
+
+    /** forgets every paired phone (they have to compare codes again) */
+    fun forgetRememberedPhones() {
+        book.forgetAll()
+        lost.clear()
+        updateReconnect()
+        _state.update { it.copy(rememberedPhones = 0) }
+    }
+
+    /** a reconnected phone must answer a question only the pair's secret answers, soon */
+    private fun startProbation(endpointId: String) {
+        val nonce = book.newNonce()
+        myNonces[endpointId] = nonce
+        send(endpointId, NearbyMessage(NearbyMessage.HELLO, phoneId = book.myId, nonce = nonce))
+        probation[endpointId] = scope.launch {
+            delay(PROOF_TIMEOUT_MS)
+            if (_state.value.friends.none { it.endpointId == endpointId }) {
+                // no answer: drop the connection (and keep the pairing: it may just be a slow phone)
+                client.disconnectFromEndpoint(endpointId)
+                cleanUpEndpoint(endpointId)
+            }
+        }
+    }
+
+    private fun cleanUpEndpoint(endpointId: String) {
+        myNonces -= endpointId
+        probation.remove(endpointId)?.cancel()
+        autoAccepted -= endpointId
+        leaving -= endpointId
+        phoneIds -= endpointId
+        names -= endpointId
     }
 
     fun connect(device: NearbyDevice) {
         if (_state.value.pending != null) return // already pairing with someone
-        client.requestConnection(displayName(), device.endpointId, connectionCallback)
+        client.requestConnection(advertisedName(), device.endpointId, connectionCallback)
             .addOnFailureListener { e ->
                 when (e.statusCode()) {
                     // both phones tapped Connect at the same time: the other request carries on
@@ -242,8 +481,16 @@ class NearbyManager(
     }
 
     fun disconnect(endpointId: String) {
-        client.disconnectFromEndpoint(endpointId)
-        removeFriend(endpointId)
+        // on purpose: neither phone looks for the other afterwards
+        send(endpointId, NearbyMessage(NearbyMessage.BYE))
+        leaving += endpointId
+        phoneIds[endpointId]?.let { lost -= it }
+        radar.forget(phoneIds[endpointId] ?: endpointId)
+        scope.launch {
+            delay(300) // the goodbye goes first
+            client.disconnectFromEndpoint(endpointId)
+            removeFriend(endpointId)
+        }
     }
 
     fun clearError() = _state.update { it.copy(error = null) }
@@ -354,6 +601,8 @@ class NearbyManager(
 
     private fun listenToSinger(endpointId: String, payload: Payload, sampleRate: Int) {
         val voice = payload.asStream()?.asInputStream() ?: return
+        // singing takes over from a walkie-talkie message (whose end then isn't reported)
+        endTalker()
         singerId = endpointId
         _state.update { it.copy(singer = friendName(endpointId)) }
         liveMic.listen(voice, sampleRate) {
@@ -365,6 +614,64 @@ class NearbyManager(
                 }
             }
         }
+    }
+
+    // ---------------------- walkie-talkie ----------------------
+
+    /** hold to talk: this phone's mic goes live to every connected friend, over their music */
+    fun startTalking() {
+        val friends = _state.value.friends.map { it.endpointId }
+        if (friends.isEmpty() || _state.value.talking || _state.value.singingTo != null) return
+        val voice = liveMic.startSinging()
+        if (voice == null) {
+            _state.update { it.copy(error = "Couldn't use the microphone") }
+            return
+        }
+        val payload = Payload.fromStream(voice)
+        friends.forEach {
+            send(it, NearbyMessage(NearbyMessage.MIC_START, payloadId = payload.id, sampleRate = LiveMic.SAMPLE_RATE, purpose = NearbyMessage.PURPOSE_WALKIE))
+        }
+        client.sendPayload(friends, payload).addOnFailureListener { stopTalking() }
+        _state.update { it.copy(talking = true) }
+        talkLimit = scope.launch {
+            delay(MAX_TALK_MS)
+            stopTalking()
+        }
+    }
+
+    /** let go: the voice stream ends, their phones beep */
+    fun stopTalking() {
+        talkLimit?.cancel()
+        if (!_state.value.talking) return
+        liveMic.stopSinging()
+        _state.update { it.copy(talking = false) }
+    }
+
+    /** a friend talks: beep, music quieter, their voice */
+    private fun listenToTalker(endpointId: String, payload: Payload, sampleRate: Int) {
+        val voice = payload.asStream()?.asInputStream() ?: return
+        // a friend singing through this phone, or another talking, has the speaker
+        if (singerId != null || (talkerId != null && talkerId != endpointId)) {
+            runCatching { voice.close() }
+            return
+        }
+        talkerId = endpointId
+        _state.update { it.copy(talker = friendName(endpointId)) }
+        alerts.talkStart()
+        player.duck(true)
+        liveMic.listen(voice, sampleRate) {
+            // (on the audio thread)
+            scope.launch { if (talkerId == endpointId) endTalker() }
+        }
+    }
+
+    /** the walkie-talkie voice is over: music back up */
+    private fun endTalker() {
+        if (talkerId == null) return
+        talkerId = null
+        _state.update { it.copy(talker = null) }
+        player.duck(false)
+        alerts.talkEnd()
     }
 
     fun startShoutOut() {
@@ -709,9 +1016,20 @@ class NearbyManager(
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
+            val (name, phoneId) = FriendBook.decodeName(info.endpointName)
+            if (phoneId != null) {
+                // already connected (e.g. it lost and found us again)
+                if (_state.value.friends.any { it.phoneId == phoneId }) return
+                // a friend who dropped out: back together without codes
+                if (phoneId in lost) {
+                    reconnectTo(endpointId, phoneId)
+                    return
+                }
+            }
+            if (!userSearching) return
             _state.update { state ->
                 if (state.found.any { it.endpointId == endpointId }) state
-                else state.copy(found = state.found + NearbyDevice(endpointId, info.endpointName))
+                else state.copy(found = state.found + NearbyDevice(endpointId, name))
             }
         }
 
@@ -722,12 +1040,20 @@ class NearbyManager(
 
     private val connectionCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            names[endpointId] = info.endpointName
+            val (name, phoneId) = FriendBook.decodeName(info.endpointName)
+            names[endpointId] = name
+            phoneId?.let { phoneIds[endpointId] = it }
+            if (phoneId != null && book.known(phoneId) != null && phoneId !in compareCodes) {
+                // paired before: no codes; it proves who it is once connected (startProbation)
+                autoAccepted += endpointId
+                client.acceptConnection(endpointId, payloadCallback)
+                return
+            }
             _state.update {
                 it.copy(
                     pending = PendingConnection(
                         endpointId = endpointId,
-                        name = info.endpointName,
+                        name = name,
                         code = info.authenticationDigits,
                         incoming = info.isIncomingConnection,
                     )
@@ -736,23 +1062,17 @@ class NearbyManager(
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            _state.update { it.copy(pending = null) }
+            _state.update { if (it.pending?.endpointId == endpointId) it.copy(pending = null) else it }
             val iRejected = rejectedByMe.remove(endpointId)
+            val automatic = autoAccepted.remove(endpointId)
+            if (automatic) {
+                // a paired phone: a friend again once it answers our question
+                if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) startProbation(endpointId)
+                else cleanUpEndpoint(endpointId)
+                return
+            }
             if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
-                val name = names[endpointId] ?: "Friend"
-                _state.update { state ->
-                    state.copy(
-                        friends = state.friends.filterNot { it.endpointId == endpointId } +
-                                ConnectedFriend(endpointId, name),
-                        found = state.found.filterNot { it.endpointId == endpointId },
-                    )
-                }
-                stopSearching()
-                requestLibrary(endpointId)
-                sendNowPlaying(endpointId)
-                startNowPlayingUpdates()
-                party.onFriendConnected(endpointId)
-                if (carDj.open) send(endpointId, carDj.stateMessage())
+                addFriend(endpointId, paired = true)
             } else if (!iRejected) {
                 val who = names.remove(endpointId) ?: "the other phone"
                 val error = if (result.status.statusCode == ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED)
@@ -761,7 +1081,47 @@ class NearbyManager(
             }
         }
 
-        override fun onDisconnected(endpointId: String) = removeFriend(endpointId)
+        override fun onDisconnected(endpointId: String) {
+            if (_state.value.friends.any { it.endpointId == endpointId }) removeFriend(endpointId)
+            else cleanUpEndpoint(endpointId)
+        }
+    }
+
+    /**
+     * [endpointId] is a friend now: codes compared ([paired], they get a pairing secret so they
+     * reconnect by themselves later) or reconnected and proven
+     */
+    private fun addFriend(endpointId: String, paired: Boolean) {
+        probation.remove(endpointId)?.cancel()
+        myNonces -= endpointId
+        val phoneId = phoneIds[endpointId]
+        val name = names[endpointId] ?: "Friend"
+        _state.update { state ->
+            state.copy(
+                friends = state.friends.filterNot { it.endpointId == endpointId } +
+                        ConnectedFriend(endpointId, name, phoneId = phoneId),
+                found = state.found.filterNot { it.endpointId == endpointId },
+            )
+        }
+        if (userSearching) stopSearching()
+        requestLibrary(endpointId)
+        sendNowPlaying(endpointId)
+        startNowPlayingUpdates()
+        party.onFriendConnected(endpointId)
+        radar.onFriendConnected(endpointId)
+        aloneTimer?.cancel()
+        if (carDj.open) send(endpointId, carDj.stateMessage())
+        if (phoneId != null) {
+            lost -= phoneId
+            if (paired) compareCodes -= phoneId
+            updateReconnect()
+        }
+        // who we are; on a new pairing one of the two (the smaller id) makes the shared secret
+        val secret = if (paired && phoneId != null && book.myId < phoneId) {
+            book.newSecret().also { book.remember(phoneId, friendName(endpointId), it) }
+        } else null
+        send(endpointId, NearbyMessage(NearbyMessage.HELLO, phoneId = book.myId, secret = secret))
+        _state.update { it.copy(rememberedPhones = book.count) }
     }
 
     private val payloadCallback = object : PayloadCallback() {
@@ -769,7 +1129,8 @@ class NearbyManager(
             if (payload.type == Payload.Type.STREAM) {
                 // a friend's live voice (announced by MIC_START just before)
                 micStreams.remove(payload.id)?.let { sampleRate ->
-                    listenToSinger(endpointId, payload, sampleRate)
+                    if (walkieStreams.remove(payload.id)) listenToTalker(endpointId, payload, sampleRate)
+                    else listenToSinger(endpointId, payload, sampleRate)
                     return
                 }
                 // a song starts arriving (its info comes as a separate message)
@@ -789,7 +1150,39 @@ class NearbyManager(
     // ---------------------- messages ----------------------
 
     private fun handle(endpointId: String, message: NearbyMessage) {
+        when (message.type) {
+            NearbyMessage.HELLO -> return receiveHello(endpointId, message)
+            NearbyMessage.PROOF -> return receiveProof(endpointId, message)
+        }
+        // a reconnected phone that hasn't proven who it is yet: nothing else
+        if (_state.value.friends.none { it.endpointId == endpointId }) return
+        if (message.type == NearbyMessage.UNPAIRED) {
+            // they don't recognize this phone any more: stop reconnecting, codes next time
+            leaving += endpointId
+            phoneIds[endpointId]?.let {
+                book.forget(it)
+                lost -= it
+            }
+            _state.update { it.copy(rememberedPhones = book.count) }
+            AppMessages.show("${friendName(endpointId)}'s phone forgot this one: connect again with Find friends")
+            return
+        }
+        if (message.type == NearbyMessage.BYE) {
+            leaving += endpointId
+            phoneIds[endpointId]?.let { lost -= it }
+            // left on purpose: off the radar and the map
+            radar.forget(phoneIds[endpointId] ?: endpointId)
+            return
+        }
+        if (message.type in Mesh.RELAYED) {
+            if (!mesh.isNew(message)) return
+            // pass it on to the others (not back to where it came from)
+            mesh.forwarded(message)?.let { copy ->
+                _state.value.friends.filter { it.endpointId != endpointId }.forEach { send(it.endpointId, copy) }
+            }
+        }
         if (party.handle(endpointId, message)) return
+        if (radar.handle(endpointId, message)) return
         when (message.type) {
             NearbyMessage.LIBRARY_REQUEST -> sendLibrary(endpointId)
             NearbyMessage.LIBRARY_PAGE -> receiveLibraryPage(endpointId, message)
@@ -799,7 +1192,10 @@ class NearbyManager(
             NearbyMessage.STREAM_REQUEST -> message.songId?.let {
                 sendSongFile(endpointId, it, askedByFriend = true, purpose = message.purpose, key = message.key)
             }
-            NearbyMessage.MIC_START -> message.payloadId?.let { micStreams[it] = message.sampleRate ?: LiveMic.SAMPLE_RATE }
+            NearbyMessage.MIC_START -> message.payloadId?.let {
+                micStreams[it] = message.sampleRate ?: LiveMic.SAMPLE_RATE
+                if (message.purpose == NearbyMessage.PURPOSE_WALKIE) walkieStreams += it
+            }
             NearbyMessage.MIC_STOP -> when (endpointId) {
                 // the singer stopped
                 singerId -> liveMic.stopListening()
@@ -841,6 +1237,52 @@ class NearbyManager(
                     }
                 )
             }
+        }
+    }
+
+    /** "this is me": remembers the phone; with a secret, the pairing; with a question, answers it */
+    private fun receiveHello(endpointId: String, message: NearbyMessage) {
+        // the id it advertised is the one it has to prove; a different one later is ignored
+        val theirId = phoneIds.getOrPut(endpointId) { message.phoneId ?: return }
+        if (message.phoneId != null && message.phoneId != theirId) return
+        val isFriend = _state.value.friends.any { it.endpointId == endpointId }
+        if (isFriend) {
+            updateFriend(endpointId) { it.copy(phoneId = theirId) }
+            // only over a connection whose codes were compared (or proven): it's really them
+            val secret = message.secret
+            if (secret != null) book.remember(theirId, friendName(endpointId), secret)
+            else book.rename(theirId, friendName(endpointId))
+            _state.update { it.copy(rememberedPhones = book.count) }
+        }
+        val nonce = message.nonce ?: return
+        // our own question bounced back: never answer it
+        if (nonce in myNonces.values) return
+        val known = book.known(theirId)
+        // "I don't know you (any more)": it then compares codes next time
+        send(endpointId, NearbyMessage(NearbyMessage.PROOF, proof = known?.let { book.proof(it.secret, nonce, prover = book.myId, verifier = theirId) }))
+    }
+
+    /** a reconnected phone answered: the same friend (a friend again) or not (disconnected) */
+    private fun receiveProof(endpointId: String, message: NearbyMessage) {
+        val nonce = myNonces[endpointId] ?: return
+        val theirId = phoneIds[endpointId] ?: return
+        val known = book.known(theirId) ?: return
+        if (message.proof == book.proof(known.secret, nonce, prover = theirId, verifier = book.myId)) {
+            addFriend(endpointId, paired = false)
+            AppMessages.show("${friendName(endpointId)} is back in range")
+        } else {
+            // it forgot us, has another secret, or isn't who it claims: compare codes next time.
+            // (Tell it, so it stops reconnecting to us.) A phone relaying both sides' answers in
+            // real time could still pass; that needs being in range of both, and is accepted here.
+            compareCodes += theirId
+            lost -= theirId
+            send(endpointId, NearbyMessage(NearbyMessage.UNPAIRED))
+            scope.launch {
+                delay(300) // the message goes first
+                client.disconnectFromEndpoint(endpointId)
+                cleanUpEndpoint(endpointId)
+            }
+            updateReconnect()
         }
     }
 
@@ -925,10 +1367,31 @@ class NearbyManager(
     }
 
     private fun removeFriend(endpointId: String) {
+        if (_state.value.friends.none { it.endpointId == endpointId }) return cleanUpEndpoint(endpointId)
         party.onFriendDisconnected(endpointId)
+        // (their last position stays on the radar, getting older)
+        // dropped out without saying goodbye: look for them, they reconnect by themselves
+        val phoneId = phoneIds[endpointId]
+        if (phoneId != null && endpointId !in leaving && book.known(phoneId) != null) {
+            lost[phoneId] = System.currentTimeMillis()
+            AppMessages.show("${friendName(endpointId)} is out of range. Reconnecting when they're back…")
+        }
+        // sharing with nobody: give friends a while to come back in range, then stop (battery)
+        if (_state.value.radar.sharing && _state.value.friends.all { it.endpointId == endpointId }) {
+            aloneTimer?.cancel()
+            aloneTimer = scope.launch {
+                delay(ALONE_STOP_MS)
+                // (not while a friend who dropped out is still being looked for)
+                if (_state.value.friends.isEmpty() && _state.value.radar.sharing && lost.isEmpty()) {
+                    setLocationSharing(false)
+                    AppMessages.show("Stopped sharing your location: no friends connected for a while")
+                }
+            }
+        }
         if (_state.value.singingTo == endpointId) stopSinging(tellThem = false)
         if (singerId == endpointId) liveMic.stopListening()
-        names.remove(endpointId)
+        if (talkerId == endpointId) liveMic.stopListening()
+        cleanUpEndpoint(endpointId)
         _state.update { state ->
             state.copy(
                 friends = state.friends.filterNot { it.endpointId == endpointId },
@@ -938,7 +1401,9 @@ class NearbyManager(
         if (_state.value.friends.isEmpty()) {
             nowPlayingJob?.cancel()
             nowPlayingJob = null
+            stopTalking()
         }
+        updateReconnect()
     }
 
     private fun Exception.statusCode(): Int? = (this as? ApiException)?.statusCode
@@ -962,6 +1427,12 @@ class NearbyManager(
 
     private fun displayName() = _state.value.deviceName.ifBlank { defaultName() }
 
+    /** the name other phones see while searching, with this phone's lasting id */
+    private fun advertisedName() = FriendBook.encodeName(displayName(), book.myId)
+
+    private fun formatMeters(meters: Float): String =
+        if (meters < 1_000f) "${meters.toInt()} m" else "%.1f km".format(meters / 1_000f)
+
     private fun savedOrDefaultName(): String =
         prefs.getString(KEY_NAME, null)?.takeIf { it.isNotBlank() } ?: defaultName()
 
@@ -984,6 +1455,20 @@ class NearbyManager(
         const val KEY_NAME = "device_name"
 
         const val KEY_LET_SAVE = "let_friends_save"
+
+        /** friends who dropped out are looked for this long (longer while sharing location) */
+        const val RECONNECT_WINDOW_MS = 15 * 60 * 1000L
+        const val RECONNECT_SCAN_MS = 20_000L
+        const val RECONNECT_PAUSE_MS = 40_000L
+        /** the phone with the bigger id waits this long before asking too */
+        const val RECONNECT_SECOND_ASK_MS = 6_000L
+        /** a reconnected phone has this long to prove who it is */
+        const val PROOF_TIMEOUT_MS = 15_000L
+        /** a walkie-talkie message is at most this long */
+        const val MAX_TALK_MS = 60_000L
+
+        /** location sharing with no friend connected stops after this long */
+        const val ALONE_STOP_MS = 10 * 60 * 1000L
 
         /** a sent song's picture: this many pixels at most, and short enough for one message */
         const val ART_SIZE = 300

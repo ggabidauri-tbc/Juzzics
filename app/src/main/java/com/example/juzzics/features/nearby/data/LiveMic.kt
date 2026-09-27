@@ -59,6 +59,8 @@ class LiveMic(context: Context) {
     // ---------------------- this phone sings ----------------------
 
     @Volatile private var recording = false
+    /** each start gets a new number: an older mic thread stops even if a new one started right away */
+    @Volatile private var recordSession = 0
 
     /**
      * starts the microphone; returns the stream to send (the other side of a pipe the
@@ -84,6 +86,7 @@ class LiveMic(context: Context) {
         } else null
 
         val (readSide, writeSide) = ParcelFileDescriptor.createPipe().let { it[0] to it[1] }
+        val session = ++recordSession
         recording = true
         keepAwake(true)
         thread(name = "juzzics-mic", priority = Thread.MAX_PRIORITY) {
@@ -93,7 +96,7 @@ class LiveMic(context: Context) {
                     recorder.startRecording()
                     val samples = ShortArray(FRAME_SAMPLES)
                     val bytes = ByteArray(FRAME_SAMPLES * 2)
-                    while (recording) {
+                    while (recordSession == session) {
                         val read = recorder.read(samples, 0, samples.size)
                         if (read < 0) break
                         if (read == 0) continue
@@ -109,6 +112,7 @@ class LiveMic(context: Context) {
             runCatching { recorder.stop() }
             suppressor?.release()
             recorder.release()
+            if (recordSession == session) recording = false
             keepAwake(false)
         }
         return readSide
@@ -116,6 +120,7 @@ class LiveMic(context: Context) {
 
     /** closing the stream tells the other phone the song is over */
     fun stopSinging() {
+        recordSession++
         recording = false
     }
 
@@ -174,13 +179,19 @@ class LiveMic(context: Context) {
 
     @Volatile private var listening = false
     @Volatile private var input: InputStream? = null
+    /** each voice played gets a new number: a newer one replaces it without being cut by it */
+    @Volatile private var listenSession = 0
+    /** sessions ended because a newer voice took over (their end isn't reported) */
+    private val replaced = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
     /** how loud the friend's voice plays: phone mics are quiet, so up to 4× */
     @Volatile var gain = 2f
 
     /** plays the voice arriving on [voice] until it ends (or [stopListening]); then [onEnd] */
     fun listen(voice: InputStream, sampleRate: Int, onEnd: () -> Unit) {
+        if (listening) replaced += listenSession
         stopListening()
+        val session = ++listenSession
         listening = true
         input = voice
         keepAwake(true)
@@ -192,7 +203,7 @@ class LiveMic(context: Context) {
                 val buffer = ByteArray(frameBytes)
                 val maxBacklog = sampleRate * 2 * MAX_BACKLOG_MS / 1000
                 val keepBacklog = sampleRate * 2 * KEEP_BACKLOG_MS / 1000
-                while (listening) {
+                while (listenSession == session) {
                     // fallen behind (a hiccup): skip to near "now" instead of staying late
                     val waiting = runCatching { voice.available() }.getOrDefault(0)
                     if (waiting > maxBacklog) voice.skip((waiting - keepBacklog).toLong() and 1L.inv())
@@ -209,14 +220,15 @@ class LiveMic(context: Context) {
                 runCatching { track.stop() }
                 track.release()
                 runCatching { voice.close() }
-                listening = false
+                if (listenSession == session) listening = false
                 keepAwake(false)
-                onEnd()
+                if (!replaced.remove(session)) onEnd()
             }
         }
     }
 
     fun stopListening() {
+        listenSession++
         listening = false
         runCatching { input?.close() }
         input = null

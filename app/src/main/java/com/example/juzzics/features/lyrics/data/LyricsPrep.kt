@@ -72,7 +72,8 @@ class LyricsPrep(
             val missing = songs.filter { it.id !in withLyrics }
             _state.update { it.copy(total = missing.size) }
 
-            // a few songs at a time: each lookup already sends several requests at once
+            // several songs at a time (each lookup sends 2-5 searches at once; the network client
+            // lets 12 run together, see ServiceModule)
             val permits = Semaphore(PARALLEL_SONGS)
             coroutineScope {
                 missing.forEach { song ->
@@ -130,6 +131,6 @@ class LyricsPrep(
     }
 
     private companion object {
-        const val PARALLEL_SONGS = 2
+        const val PARALLEL_SONGS = 5
     }
 }

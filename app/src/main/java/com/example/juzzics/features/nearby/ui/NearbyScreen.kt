@@ -1,5 +1,12 @@
 package com.example.juzzics.features.nearby.ui
 
+import com.example.juzzics.features.nearby.data.OpenRadarRequests
+import androidx.compose.runtime.collectAsState
+
+import com.example.juzzics.features.nearby.data.OfflineMapsState
+
+import com.example.juzzics.common.base.viewModel.stateValue
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.runtime.LaunchedEffect
 import com.example.juzzics.common.messages.AppMessages
 import com.example.juzzics.common.messages.AppMessage
@@ -175,6 +182,18 @@ fun NearbyScreen(
         val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
         val micPermission = ::micGranted to { micLauncher.launch(Manifest.permission.RECORD_AUDIO) }
 
+        // "open the friend radar" (a notification, a message's "Show")
+        val radarRequests by OpenRadarRequests.count.collectAsState()
+        LaunchedEffect(radarRequests) {
+            if (radarRequests > OpenRadarRequests.handledByNearby) {
+                OpenRadarRequests.handledByNearby = radarRequests
+                onAction(NearbyVM.OpenFriendAction(null))
+                onAction(NearbyVM.OpenFriendPageAction(null))
+                onAction(NearbyVM.OpenBlendAction(false))
+                onAction(NearbyVM.OpenPanelAction(NearbyPanel.RADAR))
+            }
+        }
+
         val nearby = NEARBY()
         val openFriend = OPEN_FRIEND()?.let { id -> nearby.friends.find { it.endpointId == id } }
         val friendPage = FRIEND_PAGE()?.let { id -> nearby.friends.find { it.endpointId == id } }
@@ -227,6 +246,9 @@ fun NearbyScreen(
             panel != null -> PanelPage(
                 panel = panel,
                 nearby = nearby,
+                heading = { HEADING.stateValue() },
+                radarAsMap = RADAR_AS_MAP(),
+                offlineMaps = OFFLINE_MAPS(),
                 received = RECEIVED(),
                 onSave = saveReceived,
                 micPermission = micPermission,
@@ -287,6 +309,31 @@ private fun NearbyHome(
                     }
                 }
             )
+        }
+
+        if (nearby.reconnecting.isNotEmpty()) {
+            item {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        "Looking for ${nearby.reconnecting.joinToString()}. They reconnect by themselves when back in range.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
+                }
+            }
         }
 
         if (nearby.transfers.isNotEmpty()) {
@@ -546,6 +593,17 @@ private fun TogetherGrid(nearby: NearbyState, received: List<ReceivedSong>, onAc
         )
         add(
             TogetherTile(
+                Icons.Filled.Explore, "Friend radar",
+                when {
+                    nearby.radar.people.isNotEmpty() -> "${nearby.radar.people.size} sharing where they are"
+                    nearby.radar.sharing -> "You're sharing where you are"
+                    else -> "Who's where, no internet"
+                },
+                active = nearby.radar.sharing,
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.RADAR)) }
+        )
+        add(
+            TogetherTile(
                 Icons.Filled.Inbox, "Received",
                 if (received.isEmpty()) "Songs friends send you" else "${received.size} songs",
             ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.RECEIVED)) }
@@ -629,6 +687,10 @@ private fun TogetherRow(
 private fun PanelPage(
     panel: NearbyPanel,
     nearby: NearbyState,
+    /** friend radar: where the phone points */
+    heading: () -> Float?,
+    radarAsMap: Boolean,
+    offlineMaps: OfflineMapsState,
     received: List<ReceivedSong>,
     onSave: (Long) -> Unit,
     micPermission: Pair<() -> Boolean, () -> Unit>,
@@ -644,10 +706,49 @@ private fun PanelPage(
                 NearbyPanel.SING -> "Your voice, live, on the phone playing the music"
                 NearbyPanel.SHOUT_OUT -> "A quick voice message, played over the music"
                 NearbyPanel.RECEIVED -> "The last songs friends sent you"
+                NearbyPanel.RADAR -> "Where everyone is, even without internet (GPS)"
             },
             onBack = { onAction(NearbyVM.OpenPanelAction(null)) }
         )
-        LazyColumn(
+        // the shout-out button sits low, under the thumb
+        if (panel == NearbyPanel.SHOUT_OUT) {
+            ShoutOutCard(
+                recording = nearby.recordingShoutOut,
+                playingFrom = nearby.shoutOutFrom,
+                hasPermission = micPermission.first,
+                askPermission = micPermission.second,
+                onStart = { onAction(NearbyVM.StartShoutOutAction) },
+                onStop = { send -> onAction(NearbyVM.StopShoutOutAction(send)) },
+                hasFriends = nearby.friends.isNotEmpty(),
+                modifier = Modifier.weight(1f),
+            )
+        } else if (panel == NearbyPanel.SING) {
+            // the big button sits low, under the thumb
+            SingCard(
+                friends = nearby.friends.map { it.endpointId to it.name },
+                singingTo = nearby.singingTo,
+                singer = nearby.singer,
+                micGain = nearby.micGain,
+                hasPermission = micPermission.first,
+                askPermission = micPermission.second,
+                onStart = { onAction(NearbyVM.StartSingingAction(it)) },
+                onStop = { onAction(NearbyVM.StopSingingAction) },
+                onStopSinger = { onAction(NearbyVM.StopSingerAction) },
+                onGain = { onAction(NearbyVM.MicGainAction(it)) },
+                modifier = Modifier.weight(1f),
+            )
+        } else if (panel == NearbyPanel.RADAR) {
+            // lays itself out (a map can't sit in a scrolling list: they'd fight over drags)
+            FriendRadarPanel(
+                nearby = nearby,
+                heading = heading,
+                asMap = radarAsMap,
+                offlineMaps = offlineMaps,
+                micPermission = micPermission,
+                onAction = onAction,
+                modifier = Modifier.weight(1f),
+            )
+        } else LazyColumn(
             Modifier.weight(1f),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -665,26 +766,9 @@ private fun PanelPage(
                         queue = nearby.djQueue,
                         onToggle = { onAction(NearbyVM.SetCarDjAction(it)) }
                     )
-                    NearbyPanel.SING -> SingCard(
-                        friends = nearby.friends.map { it.endpointId to it.name },
-                        singingTo = nearby.singingTo,
-                        singer = nearby.singer,
-                        micGain = nearby.micGain,
-                        hasPermission = micPermission.first,
-                        askPermission = micPermission.second,
-                        onStart = { onAction(NearbyVM.StartSingingAction(it)) },
-                        onStop = { onAction(NearbyVM.StopSingingAction) },
-                        onStopSinger = { onAction(NearbyVM.StopSingerAction) },
-                        onGain = { onAction(NearbyVM.MicGainAction(it)) },
-                    )
-                    NearbyPanel.SHOUT_OUT -> ShoutOutCard(
-                        recording = nearby.recordingShoutOut,
-                        playingFrom = nearby.shoutOutFrom,
-                        hasPermission = micPermission.first,
-                        askPermission = micPermission.second,
-                        onStart = { onAction(NearbyVM.StartShoutOutAction) },
-                        onStop = { send -> onAction(NearbyVM.StopShoutOutAction(send)) },
-                    )
+                    NearbyPanel.SING -> Unit
+                    NearbyPanel.SHOUT_OUT -> Unit
+                    NearbyPanel.RADAR -> Unit
                     NearbyPanel.RECEIVED -> if (received.isEmpty()) {
                         EmptyState(
                             icon = Icons.Filled.Inbox,
@@ -700,7 +784,7 @@ private fun PanelPage(
                     }
                 }
             }
-            if (panel != NearbyPanel.RECEIVED && nearby.friends.isEmpty()) {
+            if (panel != NearbyPanel.RECEIVED && panel != NearbyPanel.RADAR && nearby.friends.isEmpty()) {
                 item {
                     Text(
                         "Connect to a friend first (Nearby > Find friends).",
@@ -829,6 +913,19 @@ private fun NearbySettingsSheet(nearby: NearbyState, onAction: (Action) -> Unit)
                 checked = nearby.letFriendsSave,
                 onChange = { onAction(NearbyVM.LetFriendsSaveAction(it)) }
             )
+            if (nearby.rememberedPhones > 0) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Remembered phones: ${nearby.rememberedPhones}", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "They reconnect by themselves, no codes. Forget them to compare codes again.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = { onAction(NearbyVM.ForgetRememberedAction) }) { Text("Forget") }
+                }
+            }
         }
     }
 }

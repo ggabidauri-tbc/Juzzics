@@ -277,6 +277,12 @@ private fun TripPrepSheet(states: BaseState, onAction: (Action) -> Unit) {
                     onStop = { onAction(HomeVM.StopTripPrepAction) },
                     onDismissMessage = { onAction(HomeVM.DismissTripPrepMessageAction) },
                 )
+                Text(
+                    "Going somewhere without signal? Save a map of the area too: Nearby › Friend radar › Map › Offline maps.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
             }
         }
     }
