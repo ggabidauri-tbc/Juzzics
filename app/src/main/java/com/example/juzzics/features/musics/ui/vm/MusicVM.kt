@@ -6,6 +6,7 @@ import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseViewModel
 import com.example.juzzics.common.base.viewModel.StateKey
 import com.example.juzzics.common.base.viewModel.UiEvent
+import com.example.juzzics.common.songs.SongSettings
 import com.example.juzzics.features.lyrics.domain.model.LyricsDomain
 import com.example.juzzics.features.lyrics.domain.model.LyricsCandidate
 import com.example.juzzics.features.lyrics.domain.usecase.FindLyricsUseCase
@@ -38,10 +39,11 @@ import com.example.juzzics.features.player.PlayerController
 import com.example.juzzics.features.player.RepeatMode
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.flow.drop
 
 
 class MusicVM(
-    getAllLocalMusicFilesUseCase: GetAllLocalMusicFilesUseCase,
+    private val getAllLocalMusicFilesUseCase: GetAllLocalMusicFilesUseCase,
     val findLyricsUseCase: FindLyricsUseCase,
     val searchLyricsUseCase: SearchLyricsUseCase,
     val observeSavedLyricsUseCase: ObserveSavedLyricsUseCase,
@@ -50,12 +52,13 @@ class MusicVM(
     observeLikedSongIdsUseCase: ObserveLikedSongIdsUseCase,
     val toggleLikeUseCase: ToggleLikeUseCase,
     val player: PlayerController,
+    val songSettings: SongSettings,
 ) : BaseViewModel(
     listOf(
         MUSIC_LIST, CLICKED_MUSIC, IS_PLAYING, SCENE_NAME,
         LYRICS, LYRICS_CANDIDATES, LYRICS_STATUS, ARTIST, TITLE,
         SEARCH_QUERY, SORT, BROWSE_TAB, BROWSE_GROUP, LIKED_IDS, PLAYING_FROM,
-        SHUFFLE, REPEAT, QUEUE, QUEUE_INDEX, SHOW_QUEUE, PROGRESS,
+        SHUFFLE, REPEAT, QUEUE, QUEUE_INDEX, SHOW_QUEUE, PROGRESS, LYRICS_OFFSETS,
     )
 ) {
     companion object {
@@ -91,6 +94,8 @@ class MusicVM(
         val QUEUE_INDEX = StateKey("queueIndex", -1)
         val SHOW_QUEUE = StateKey("showQueue", false)
         val PROGRESS = StateKey("progress", PlaybackProgress())
+        /** song id to how much its synced lyrics are shifted (ms) */
+        val LYRICS_OFFSETS = StateKey<Map<Long, Long>>("lyricsOffsets", emptyMap())
     }
 
     object MotionScenes {
@@ -108,12 +113,19 @@ class MusicVM(
     internal val autoLyricsTried = mutableSetOf<Long>()
 
     init {
-        launch {
-            call(getAllLocalMusicFilesUseCase().mapList { it.toUi() }, MUSIC_LIST)
-            MUSIC_LIST(MUSIC_LIST().markPlaying(CLICKED_MUSIC()?.id))
-        }
+        loadSongs()
         observePlayer()
         observeLikedSongIdsUseCase().collectIn(LIKED_IDS)
+        songSettings.lyricsOffsets.collectIn(LYRICS_OFFSETS)
+        // a song was renamed (Home > Fix song names): show the new names
+        launch(emitLoadingAction = false) {
+            songSettings.names.drop(1).collect { loadSongs() }
+        }
+    }
+
+    private fun loadSongs() = launch {
+        call(getAllLocalMusicFilesUseCase().mapList { it.toUi() }, MUSIC_LIST)
+        MUSIC_LIST(MUSIC_LIST().markPlaying(CLICKED_MUSIC()?.id))
     }
 
     override fun onAction(action: Action) {
@@ -156,12 +168,18 @@ class MusicVM(
             is UpdateArtistAction -> ARTIST(action.value)
             is UpdateTitleAction -> TITLE(action.value)
             is TieLyrics -> tieLyrics()
+            is ShiftLyricsAction -> CLICKED_MUSIC()?.id?.let { id ->
+                val offset = (LYRICS_OFFSETS()[id] ?: 0L) + action.deltaMs
+                songSettings.setLyricsOffset(id, offset.coerceIn(-10_000L, 10_000L))
+            }
         }
         // opening the lyrics screen looks lyrics up if the song has none yet
         if (!SCENE_NAME == FOURTH) lookUpLyricsIfMissing()
     }
 
     data object FetchLyricsAction : Action
+    /** synced lyrics of the current song run early (negative) or late (positive): shift them */
+    data class ShiftLyricsAction(val deltaMs: Long) : Action
     /** picks one of [LYRICS_CANDIDATES] */
     data class PickLyricsAction(val index: Int) : Action
     data object BackToLyricsResultsAction : Action

@@ -18,6 +18,9 @@ interface LyricsRepo {
     /** manual search: results to pick from, best first */
     suspend fun searchLyrics(artist: String, title: String, durationMs: Long): Result<List<LyricsCandidate>>
 
+    /** songs that have lyrics saved */
+    suspend fun songIdsWithLyrics(): Set<Long>
+
     /** lyrics tied to a song, null if none */
     fun observeSavedLyrics(songId: Long): Flow<LyricsDomain?>
 

@@ -50,6 +50,9 @@ data class NearbyState(
     val friends: List<ConnectedFriend> = emptyList(),
     /** songs being sent to / from this phone */
     val transfers: List<SongTransfer> = emptyList(),
+    /** friends may save songs this phone sends them */
+    val letFriendsSave: Boolean = true,
+    val party: PartyState = PartyState(),
     val error: String? = null,
 )
 
@@ -63,6 +66,19 @@ data class SongTransfer(
     val incoming: Boolean,
     /** 0..1, null while waiting for the other phone to start sending */
     val progress: Float? = null,
+)
+
+enum class PartyRole { NONE, HOST, GUEST }
+
+/** Party mode: all phones play the same song at the same moment, following the host phone. */
+data class PartyState(
+    val role: PartyRole = PartyRole.NONE,
+    /** GUEST: whose party */
+    val hostName: String = "",
+    /** HOST: phones following this one */
+    val guestNames: List<String> = emptyList(),
+    /** GUEST: the host's current song is still on its way to this phone */
+    val waitingForSong: Boolean = false,
 )
 
 /** Remote-control commands sent to a friend's phone. */

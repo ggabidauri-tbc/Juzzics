@@ -2,7 +2,6 @@ package com.example.juzzics.features.home
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -34,6 +33,9 @@ import com.example.juzzics.common.base.extensions.with2
 import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseState
 import com.example.juzzics.common.base.viewModel.invoke
+import com.example.juzzics.features.home.components.NameFixesCard
+import com.example.juzzics.features.home.components.NameFixesDialog
+import com.example.juzzics.features.home.components.TripPrepCard
 import com.example.juzzics.features.home.ui.vm.HomeVM
 import com.example.juzzics.features.musics.domain.model.MusicFileDomain
 
@@ -55,17 +57,16 @@ fun HomeScreen(
             onOpenPlayer()
         }
 
+        val suggestions = NAME_SUGGESTIONS()
+        if (SHOW_NAME_FIXES() && suggestions.isNotEmpty()) {
+            NameFixesDialog(
+                suggestions = suggestions,
+                onApply = { onAction(HomeVM.ApplyNameFixesAction(it)) },
+                onDismiss = { onAction(HomeVM.ShowNameFixesAction(false)) }
+            )
+        }
+
         Surface(Modifier.fillMaxSize()) {
-            if (recent.isEmpty() && playlists.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    EmptyState(
-                        icon = Icons.Filled.Headphones,
-                        title = "Welcome to Juzzics",
-                        message = "Play some music from the Musics tab. Your recently and most played songs will show up here."
-                    )
-                }
-                return@Surface
-            }
             LazyColumn(contentPadding = PaddingValues(vertical = 16.dp)) {
                 item {
                     Text(
@@ -73,6 +74,36 @@ fun HomeScreen(
                         style = MaterialTheme.typography.headlineLarge,
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
+                }
+
+                item {
+                    TripPrepCard(
+                        state = LYRICS_PREP(),
+                        onStart = { onAction(HomeVM.StartTripPrepAction) },
+                        onStop = { onAction(HomeVM.StopTripPrepAction) },
+                        onDismissMessage = { onAction(HomeVM.DismissTripPrepMessageAction) },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)
+                    )
+                }
+                if (suggestions.isNotEmpty()) {
+                    item {
+                        NameFixesCard(
+                            count = suggestions.size,
+                            onOpen = { onAction(HomeVM.ShowNameFixesAction(true)) },
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)
+                        )
+                    }
+                }
+
+                if (recent.isEmpty() && playlists.isEmpty()) {
+                    item {
+                        EmptyState(
+                            icon = Icons.Filled.Headphones,
+                            title = "Welcome to Juzzics",
+                            message = "Play some music from the Musics tab. Your recently and most played songs will show up here.",
+                            modifier = Modifier.padding(top = 32.dp)
+                        )
+                    }
                 }
 
                 if (recent.isNotEmpty()) {

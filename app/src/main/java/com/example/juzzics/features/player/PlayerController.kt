@@ -109,6 +109,17 @@ class PlayerController(
 
     fun pause() = withController { it.pause() }
 
+    fun resume() = withController { it.recoverAndPlay() }
+
+    /** playing, or about to (loading a song after play was pressed) */
+    fun wantsToPlay(): Boolean = controller?.playWhenReady ?: false
+
+    /** exact position right now (the [progress] flow is only updated 4 times a second) */
+    fun currentPositionMs(): Long = controller?.currentPosition ?: 0L
+
+    /** 1f is normal; party mode nudges it a little to stay in sync with the host phone */
+    fun setSpeed(speed: Float) = withController { it.setPlaybackSpeed(speed) }
+
     fun next() = withController {
         if (it.hasNextMediaItem()) {
             it.seekToNextMediaItem()

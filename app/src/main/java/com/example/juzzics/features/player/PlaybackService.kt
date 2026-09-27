@@ -3,11 +3,15 @@ package com.example.juzzics.features.player
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
+import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.juzzics.MainActivity
+import com.example.juzzics.features.player.stream.StreamAwareDataSourceFactory
 
 /**
  * Owns the player, so music keeps playing with the screen off or the app in background.
@@ -18,9 +22,12 @@ class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
 
+    @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
         val player = ExoPlayer.Builder(this)
+            // songs streaming in from a friend's phone can play while they arrive
+            .setMediaSourceFactory(DefaultMediaSourceFactory(StreamAwareDataSourceFactory(this)))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)

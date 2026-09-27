@@ -7,6 +7,7 @@ import com.example.juzzics.features.lyrics.data.service.LrclibService
 import com.example.juzzics.features.lyrics.data.service.LyricsService
 import com.example.juzzics.features.lyrics.domain.model.LyricsCandidate
 import com.example.juzzics.features.lyrics.domain.model.LyricsDomain
+import com.example.juzzics.features.lyrics.domain.model.LyricsMatch
 import com.example.juzzics.features.lyrics.domain.model.lrcToPlainText
 import com.example.juzzics.features.lyrics.domain.repo.LyricsRepo
 import com.example.juzzics.features.lyrics.domain.util.SongNameCleaner
@@ -25,6 +26,9 @@ private const val CLOSE_LENGTH_SECONDS = 20.0
 
 /** share of a result's name words that must appear in what we searched for */
 private const val NAME_MATCH = 0.6
+
+/** a found song's name is only suggested as a rename when this much of it matches (and the length too) */
+private const val CONFIDENT_NAME_MATCH = 0.5
 
 class LyricsRepoImpl(
     private val lyricsService: LyricsService,
@@ -56,7 +60,14 @@ class LyricsRepoImpl(
             // the first convincing match, in the tries' order
             tries.zip(results).firstNotNullOfOrNull { (attempt, found) ->
                 bestMatch(found, attempt.first, durationMs)
-            }?.let { return@runCatching it.lyrics }
+            }?.let { (score, candidate) ->
+                val match = LyricsMatch(
+                    title = candidate.title,
+                    artist = candidate.artist,
+                    confident = candidate.sameLength && score.nameMatch >= CONFIDENT_NAME_MATCH,
+                )
+                return@runCatching candidate.lyrics.copy(match = match)
+            }
 
             // nothing on LRCLIB: plain lyrics from lyrics.ovh with the best guess
             val guess = guesses.firstOrNull() ?: error("No lyrics found")
@@ -98,10 +109,10 @@ class LyricsRepoImpl(
     }
 
     /** the best result if it's convincing (right length or clearly the right name), else null */
-    private fun bestMatch(results: List<LrclibDto>, searched: String, durationMs: Long): LyricsCandidate? =
+    private fun bestMatch(results: List<LrclibDto>, searched: String, durationMs: Long): Pair<Score, LyricsCandidate>? =
         rank(results, searched, durationMs).firstOrNull { (score, candidate) ->
             candidate.sameLength || score.closeLength || score.nameMatch >= NAME_MATCH
-        }?.second
+        }
 
     private data class Score(val closeLength: Boolean, val nameMatch: Double)
 
@@ -143,6 +154,8 @@ class LyricsRepoImpl(
         val body = lyricsService.getLyrics(artist, title).body()
         return body?.toDomain()?.takeIf { it.lyrics.isNotBlank() } ?: error("No lyrics found")
     }
+
+    override suspend fun songIdsWithLyrics(): Set<Long> = lyricsDao.songIds().toSet()
 
     override fun observeSavedLyrics(songId: Long): Flow<LyricsDomain?> =
         lyricsDao.observeLyrics(songId).map { entity ->

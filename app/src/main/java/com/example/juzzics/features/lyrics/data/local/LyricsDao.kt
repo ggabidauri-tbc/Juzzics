@@ -10,6 +10,9 @@ interface LyricsDao {
     @Query("SELECT * FROM lyrics WHERE songId = :songId")
     fun observeLyrics(songId: Long): Flow<LyricsEntity?>
 
+    @Query("SELECT songId FROM lyrics")
+    suspend fun songIds(): List<Long>
+
     @Upsert
     suspend fun save(lyrics: LyricsEntity)
 }

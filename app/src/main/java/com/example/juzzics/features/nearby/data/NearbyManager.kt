@@ -1,13 +1,19 @@
 package com.example.juzzics.features.nearby.data
 
 import android.content.ContentUris
+import android.graphics.Bitmap
+import android.os.ParcelFileDescriptor
+import android.util.Base64
 import android.content.Context
 import android.media.AudioManager
-import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.provider.Settings
 import androidx.core.content.edit
+import com.example.juzzics.common.artwork.loadSongArtwork
+import com.example.juzzics.features.lyrics.domain.model.LyricsDomain
+import com.example.juzzics.features.lyrics.domain.model.lrcToPlainText
+import com.example.juzzics.features.lyrics.domain.repo.LyricsRepo
 import com.example.juzzics.features.musics.domain.model.MusicFileDomain
 import com.example.juzzics.features.musics.domain.repo.MusicRepo
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
@@ -20,6 +26,7 @@ import com.example.juzzics.features.nearby.domain.RemoteSong
 import com.example.juzzics.features.nearby.domain.SongTransfer
 import com.example.juzzics.features.player.OpenPlayerRequests
 import com.example.juzzics.features.player.PlayerController
+import com.example.juzzics.features.player.stream.GrowingFiles
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -45,12 +52,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileInputStream
 
 /**
  * Connects phones running Juzzics without internet (Google Nearby Connections:
@@ -64,6 +72,8 @@ class NearbyManager(
     private val context: Context,
     private val player: PlayerController,
     private val musicRepo: MusicRepo,
+    private val lyricsRepo: LyricsRepo,
+    private val received: ReceivedSongs,
 ) {
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -71,8 +81,19 @@ class NearbyManager(
     private val prefs = context.getSharedPreferences("nearby", Context.MODE_PRIVATE)
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-    private val _state = MutableStateFlow(NearbyState(deviceName = savedOrDefaultName()))
+    private val _state = MutableStateFlow(
+        NearbyState(deviceName = savedOrDefaultName(), letFriendsSave = prefs.getBoolean(KEY_LET_SAVE, true))
+    )
     val state: StateFlow<NearbyState> = _state.asStateFlow()
+
+    private val party = NearbyParty(
+        player = player,
+        scope = scope,
+        send = { endpointId, message -> send(endpointId, message) },
+        sendSong = { endpointId, song, partyKey -> scope.launch { sendSongFile(endpointId, song, partyKey) } },
+        nameOf = ::friendName,
+        onState = { party -> _state.update { it.copy(party = party) } },
+    )
 
     /** names of phones we're (becoming) connected to */
     private val names = mutableMapOf<String, String>()
@@ -95,6 +116,18 @@ class NearbyManager(
             startAdvertising()
         }
     }
+
+    /** friends may keep the songs this phone sends them */
+    fun setLetFriendsSave(allow: Boolean) {
+        prefs.edit { putBoolean(KEY_LET_SAVE, allow) }
+        _state.update { it.copy(letFriendsSave = allow) }
+    }
+
+    /** party mode: connected friends' phones play along with this one */
+    fun startParty() = party.startHosting(_state.value.friends.map { it.endpointId })
+
+    /** host: ends it for everyone; guest: leaves it */
+    fun endParty() = party.end()
 
     /** on: friends nearby can find this phone, browse its songs and play them here */
     fun setSharing(on: Boolean) {
@@ -202,16 +235,29 @@ class NearbyManager(
 
     // ---------------------- songs sent between phones ----------------------
 
-    /** file payloads coming in, by payload id */
-    private val incomingFiles = mutableMapOf<Long, Payload>()
-    /** what each incoming file is (comes as a separate small message, in any order) */
-    private val incomingInfo = mutableMapOf<Long, NearbyMessage>()
-    /** incoming files fully received */
-    private val receivedPayloads = mutableSetOf<Long>()
-    /** incoming files we asked for ("listen here"): the player opens when they start */
+    /**
+     * A song streaming in. Its bytes go to [path] as they arrive; once the first bit is there
+     * it's announced (and played / handed to the party) while the rest keeps arriving.
+     */
+    private class IncomingSong(val payloadId: Long, val endpointId: String, val songId: Long) {
+        var info: NearbyMessage? = null
+        var payload: Payload? = null
+        var path: String? = null
+        @Volatile var written = 0L
+        @Volatile var failed = false
+        var announced = false
+        var reading = false
+    }
+
+    /** songs streaming in, by payload id */
+    private val incoming = mutableMapOf<Long, IncomingSong>()
+    /** incoming songs we asked for ("listen here"): the player opens when they start */
     private val requestedPayloads = mutableSetOf<Long>()
-    /** files this phone is sending */
-    private val outgoingPayloads = mutableSetOf<Long>()
+    /** songs this phone is sending, with their sizes (for progress) */
+    private val outgoingSizes = mutableMapOf<Long, Long>()
+    /** pictures and lyrics of incoming songs (separate small messages) */
+    private val incomingArt = mutableMapOf<Long, String>()
+    private val incomingLyrics = mutableMapOf<Long, LyricsDomain>()
 
     /** gets one of their songs to play it on this phone */
     fun listenHere(endpointId: String, song: RemoteSong) {
@@ -228,135 +274,230 @@ class NearbyManager(
     suspend fun mySongs(): List<RemoteSong> =
         musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).map { it.toRemote() }
 
+    /** a friend asked for one of this phone's songs, or picked one to send */
     private fun sendSongFile(endpointId: String, songId: Long, askedByFriend: Boolean) {
         scope.launch {
             val song = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).find { it.id == songId }
-            val file = song?.let {
-                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
-                withContext(Dispatchers.IO) { runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull() }
-            }
-            if (song == null || file == null) {
+            if (song == null || !sendSongFile(endpointId, song)) {
                 if (askedByFriend) send(endpointId, NearbyMessage(NearbyMessage.FILE_FAILED, songId = songId))
                 else _state.update { it.copy(error = "Couldn't open that song to send it") }
-                return@launch
             }
-            val payload = Payload.fromFile(file)
-            outgoingPayloads += payload.id
-            addTransfer(
-                SongTransfer(outKey(payload.id), endpointId, song.title.orEmpty(), friendName(endpointId), incoming = false, progress = 0f)
-            )
-            // first what it is, then the file itself
-            send(
-                endpointId,
-                NearbyMessage(
-                    NearbyMessage.FILE_INFO,
-                    songId = songId,
-                    payloadId = payload.id,
-                    title = song.title,
-                    artist = song.artist?.takeUnless { it == "<unknown>" },
-                    durationMs = song.duration,
-                    extension = song.data?.substringAfterLast('.', "")?.take(5),
-                )
-            )
-            client.sendPayload(endpointId, payload)
-                .addOnFailureListener { e -> transferFailed(outKey(payload.id), payload.id, "Couldn't send \"${song.title}\". ${e.explain()}") }
         }
     }
 
+    /**
+     * streams [song]: first what it is (plus its picture and lyrics), then the file's bytes,
+     * which the other phone can start playing before they've all arrived.
+     * [partyKey] set: it's for party mode (the guest follows the host with it).
+     * false if the file couldn't be opened
+     */
+    private suspend fun sendSongFile(endpointId: String, song: MusicFileDomain, partyKey: Long? = null): Boolean {
+        val file = withContext(Dispatchers.IO) {
+            runCatching {
+                val path = song.data
+                if (song.id < 0 && path != null) {
+                    // a song a friend sent us (party host passing it on)
+                    ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
+                } else {
+                    val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
+                    context.contentResolver.openFileDescriptor(uri, "r")
+                }
+            }.getOrNull()
+        } ?: return false
+        val (art, lyrics) = withContext(Dispatchers.IO) {
+            artworkForSending(song.id) to runCatching { lyricsRepo.observeSavedLyrics(song.id).first() }.getOrNull()
+        }
+
+        val size = file.statSize
+        val payload = Payload.fromStream(file)
+        outgoingSizes[payload.id] = size
+        addTransfer(
+            SongTransfer(outKey(payload.id), endpointId, song.title.orEmpty(), friendName(endpointId), incoming = false, progress = 0f)
+        )
+        val path = song.data.orEmpty()
+        send(
+            endpointId,
+            NearbyMessage(
+                NearbyMessage.FILE_INFO,
+                songId = song.id,
+                payloadId = payload.id,
+                title = song.title,
+                artist = song.artist?.takeUnless { it == "<unknown>" },
+                durationMs = song.duration,
+                extension = path.substringAfterLast('.', "").take(5),
+                sizeBytes = size,
+                canSave = _state.value.letFriendsSave,
+                purpose = partyKey?.let { NearbyMessage.PURPOSE_PARTY },
+                partyKey = partyKey,
+            )
+        )
+        art?.let { send(endpointId, NearbyMessage(NearbyMessage.SONG_ART, payloadId = payload.id, art = it)) }
+        lyrics?.let {
+            // synced lyrics carry the plain text too: send one, it has to fit in one message
+            val message = if (it.synced != null) NearbyMessage(NearbyMessage.SONG_LYRICS, payloadId = payload.id, synced = it.synced)
+            else NearbyMessage(NearbyMessage.SONG_LYRICS, payloadId = payload.id, lyrics = it.lyrics)
+            send(endpointId, message)
+        }
+        client.sendPayload(endpointId, payload)
+            .addOnFailureListener { e -> sendFailed(payload.id, "Couldn't send \"${song.title}\". ${e.explain()}") }
+        return true
+    }
+
+    /** the song's picture as a small JPEG in base64, small enough for one message; null if none */
+    private fun artworkForSending(songId: Long): String? {
+        val bitmap = loadSongArtwork(context, songId) ?: return null
+        val scale = ART_SIZE.toFloat() / maxOf(bitmap.width, bitmap.height)
+        val small = if (scale < 1f) {
+            Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
+        } else bitmap
+        for (quality in listOf(80, 65, 50, 35)) {
+            val bytes = ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
+            val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            if (base64.length < MAX_ART_CHARS) return base64
+        }
+        return null
+    }
+
+    private fun incomingSong(payloadId: Long, endpointId: String) =
+        incoming.getOrPut(payloadId) { IncomingSong(payloadId, endpointId, received.newId()) }
+
     private fun receiveFileInfo(endpointId: String, message: NearbyMessage) {
         val payloadId = message.payloadId ?: return
-        incomingInfo[payloadId] = message
-        val asked = removeTransfer(requestKey(endpointId, message.songId ?: 0))
+        val song = incomingSong(payloadId, endpointId)
+        song.info = message
+        song.path?.let { GrowingFiles.setTotalBytes(it, message.sizeBytes ?: -1L) }
+        val asked = removeTransfer(requestKey(endpointId, message.songId ?: 0L))
         if (asked) requestedPayloads += payloadId
         addTransfer(
             SongTransfer(inKey(payloadId), endpointId, message.title.orEmpty(), friendName(endpointId), incoming = true, progress = 0f)
         )
-        finishIncoming(endpointId, payloadId)
+        announceIfReady(song)
+    }
+
+    /** the song's bytes start arriving: write them to a file as they come */
+    private fun receiveStream(endpointId: String, payload: Payload) {
+        val song = incomingSong(payload.id, endpointId)
+        song.payload = payload
+        if (song.reading) return
+        song.reading = true
+        val file = received.songFile(song.songId, "audio")
+        song.path = file.absolutePath
+        GrowingFiles.start(file.absolutePath, song.info?.sizeBytes ?: -1L)
+        scope.launch {
+            val success = withContext(Dispatchers.IO) {
+                runCatching {
+                    val input = payload.asStream()?.asInputStream() ?: error("no stream")
+                    input.use {
+                        file.outputStream().use { out ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                out.write(buffer, 0, read)
+                                song.written += read
+                                GrowingFiles.progress(file.absolutePath, song.written)
+                                if (!song.announced && song.written >= READY_BYTES) {
+                                    withContext(Dispatchers.Main) { announceIfReady(song) }
+                                }
+                                val size = song.info?.sizeBytes ?: 0L
+                                if (size > 0) setProgress(inKey(song.payloadId), song.written.toFloat() / size)
+                            }
+                        }
+                    }
+                    val size = song.info?.sizeBytes ?: 0L
+                    !song.failed && (size <= 0 || song.written >= size)
+                }.getOrDefault(false)
+            }
+            GrowingFiles.finish(file.absolutePath, success)
+            incoming -= song.payloadId
+            removeTransfer(inKey(song.payloadId))
+            if (success) {
+                announceIfReady(song, complete = true)
+            } else {
+                receiveFailed(song)
+            }
+        }
+    }
+
+    /**
+     * enough of the song is here to start playing (or all of it, [complete]): keep it
+     * (with picture and lyrics) and play it / hand it to the party
+     */
+    private fun announceIfReady(song: IncomingSong, complete: Boolean = false) {
+        val info = song.info ?: return
+        val path = song.path ?: return
+        if (song.announced || song.failed) return
+        if (!complete && song.written < READY_BYTES) return
+        song.announced = true
+        val asked = requestedPayloads.remove(song.payloadId)
+        val art = incomingArt.remove(song.payloadId)
+        val lyrics = incomingLyrics.remove(song.payloadId)
+        scope.launch {
+            val receivedSong = ReceivedSong(
+                id = song.songId,
+                title = info.title.orEmpty(),
+                artist = info.artist.orEmpty(),
+                durationMs = info.durationMs ?: 0L,
+                path = path,
+                from = friendName(song.endpointId),
+                canSave = info.canSave == true,
+                extension = info.extension?.filter { it.isLetterOrDigit() }?.take(5)?.ifBlank { null },
+            )
+            val artBytes = art?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
+            received.add(receivedSong, artBytes, lyrics)
+
+            val partyKey = info.partyKey
+            if (info.purpose == NearbyMessage.PURPOSE_PARTY && partyKey != null) {
+                party.onSongReady(partyKey, received.toMusicFile(receivedSong))
+            } else {
+                player.playQueue(listOf(received.toMusicFile(receivedSong)), 0, source = "From ${receivedSong.from}")
+                if (asked) OpenPlayerRequests.request()
+            }
+        }
+    }
+
+    private fun receiveFailed(song: IncomingSong) {
+        song.failed = true
+        requestedPayloads -= song.payloadId
+        incomingArt -= song.payloadId
+        incomingLyrics -= song.payloadId
+        removeTransfer(inKey(song.payloadId))
+        scope.launch { received.remove(song.songId) }
+        song.path?.let { File(it).delete() }
+        _state.update { it.copy(error = "\"${song.info?.title ?: "The song"}\" stopped half-way. Stay closer together and try again.") }
+    }
+
+    private fun sendFailed(payloadId: Long, error: String) {
+        outgoingSizes -= payloadId
+        if (removeTransfer(outKey(payloadId))) _state.update { it.copy(error = error) }
     }
 
     private fun onFileUpdate(endpointId: String, update: PayloadTransferUpdate) {
         val id = update.payloadId
-        val outgoing = id in outgoingPayloads
-        val incoming = id in incomingFiles || id in incomingInfo
-        if (!outgoing && !incoming) return // one of the small messages
-        val key = if (outgoing) outKey(id) else inKey(id)
-        when (update.status) {
-            PayloadTransferUpdate.Status.IN_PROGRESS ->
-                if (update.totalBytes > 0) setProgress(key, update.bytesTransferred.toFloat() / update.totalBytes)
-
-            PayloadTransferUpdate.Status.SUCCESS -> if (outgoing) {
-                outgoingPayloads -= id
-                removeTransfer(key)
-            } else {
-                receivedPayloads += id
-                finishIncoming(endpointId, id)
+        val outgoingSize = outgoingSizes[id]
+        val incomingSong = incoming[id]
+        when {
+            outgoingSize != null -> when (update.status) {
+                PayloadTransferUpdate.Status.IN_PROGRESS -> {
+                    val total = if (update.totalBytes > 0) update.totalBytes else outgoingSize
+                    if (total > 0) setProgress(outKey(id), update.bytesTransferred.toFloat() / total)
+                }
+                PayloadTransferUpdate.Status.SUCCESS -> {
+                    outgoingSizes -= id
+                    removeTransfer(outKey(id))
+                }
+                PayloadTransferUpdate.Status.FAILURE, PayloadTransferUpdate.Status.CANCELED ->
+                    sendFailed(id, "Sending the song stopped half-way. Stay closer together and try again.")
             }
 
-            PayloadTransferUpdate.Status.FAILURE, PayloadTransferUpdate.Status.CANCELED ->
-                transferFailed(key, id, "The song stopped half-way. Stay closer together and try again.")
-        }
-    }
-
-    private fun transferFailed(key: String, payloadId: Long, error: String) {
-        outgoingPayloads -= payloadId
-        incomingFiles -= payloadId
-        incomingInfo -= payloadId
-        receivedPayloads -= payloadId
-        requestedPayloads -= payloadId
-        if (removeTransfer(key)) _state.update { it.copy(error = error) }
-    }
-
-    /** file and its info are both here: keep a copy and play it */
-    private fun finishIncoming(endpointId: String, payloadId: Long) {
-        if (payloadId !in receivedPayloads) return
-        val info = incomingInfo.remove(payloadId) ?: return
-        val payload = incomingFiles.remove(payloadId) ?: return
-        receivedPayloads -= payloadId
-        val asked = requestedPayloads.remove(payloadId)
-        scope.launch {
-            val file = withContext(Dispatchers.IO) { runCatching { saveReceived(payload, info) }.getOrNull() }
-            removeTransfer(inKey(payloadId))
-            if (file == null) {
-                _state.update { it.copy(error = "Couldn't save \"${info.title}\" on this phone") }
-                return@launch
+            incomingSong != null -> if (
+                update.status == PayloadTransferUpdate.Status.FAILURE ||
+                update.status == PayloadTransferUpdate.Status.CANCELED
+            ) {
+                // stops the reading loop, which then cleans up
+                incomingSong.failed = true
+                runCatching { incomingSong.payload?.asStream()?.asInputStream()?.close() }
             }
-            val song = MusicFileDomain(
-                // negative: never mixed up with the phone's own songs (the player plays it from `data`)
-                id = -System.currentTimeMillis(),
-                title = info.title,
-                artist = info.artist,
-                data = file.absolutePath,
-                duration = info.durationMs ?: 0,
-                icon = Uri.EMPTY,
-            )
-            player.playQueue(listOf(song), 0, source = "From ${friendName(endpointId)}")
-            if (asked) OpenPlayerRequests.request()
-        }
-    }
-
-    /** copies the received song into the app's cache (keeps only the last few) */
-    private fun saveReceived(payload: Payload, info: NearbyMessage): File {
-        val received = payload.asFile() ?: error("not a file")
-        val dir = File(context.cacheDir, RECEIVED_DIR).apply { mkdirs() }
-        val extension = info.extension?.filter { it.isLetterOrDigit() }?.take(5)?.ifBlank { null } ?: "audio"
-        val target = File(dir, "song_${System.currentTimeMillis()}.$extension")
-        received.asParcelFileDescriptor().use { descriptor ->
-            FileInputStream(descriptor.fileDescriptor).use { input -> target.outputStream().use { input.copyTo(it) } }
-        }
-        received.deleteOriginal()
-        dir.listFiles()
-            ?.sortedByDescending { it.lastModified() }
-            ?.drop(KEEP_RECEIVED_SONGS)
-            ?.forEach { it.delete() }
-        return target
-    }
-
-    /** Nearby keeps its own copy of received files (in Downloads): not needed after we copied it */
-    @Suppress("DEPRECATION")
-    private fun Payload.File.deleteOriginal() {
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) asUri()?.let { context.contentResolver.delete(it, null, null) }
-            else asJavaFile()?.delete()
         }
     }
 
@@ -439,6 +580,7 @@ class NearbyManager(
                 requestLibrary(endpointId)
                 sendNowPlaying(endpointId)
                 startNowPlayingUpdates()
+                party.onFriendConnected(endpointId)
             } else if (!iRejected) {
                 val who = names.remove(endpointId) ?: "the other phone"
                 val error = if (result.status.statusCode == ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED)
@@ -452,9 +594,9 @@ class NearbyManager(
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            if (payload.type == Payload.Type.FILE) {
+            if (payload.type == Payload.Type.STREAM) {
                 // a song starts arriving (its info comes as a separate message)
-                incomingFiles[payload.id] = payload
+                receiveStream(endpointId, payload)
                 return
             }
             if (payload.type != Payload.Type.BYTES) return
@@ -470,6 +612,7 @@ class NearbyManager(
     // ---------------------- messages ----------------------
 
     private fun handle(endpointId: String, message: NearbyMessage) {
+        if (party.handle(endpointId, message)) return
         when (message.type) {
             NearbyMessage.LIBRARY_REQUEST -> sendLibrary(endpointId)
             NearbyMessage.LIBRARY_PAGE -> receiveLibraryPage(endpointId, message)
@@ -478,6 +621,12 @@ class NearbyManager(
                 ?.let(::runCommand)
             NearbyMessage.STREAM_REQUEST -> message.songId?.let { sendSongFile(endpointId, it, askedByFriend = true) }
             NearbyMessage.FILE_INFO -> receiveFileInfo(endpointId, message)
+            NearbyMessage.SONG_ART -> message.payloadId?.let { id -> message.art?.let { incomingArt[id] = it } }
+            NearbyMessage.SONG_LYRICS -> message.payloadId?.let { id ->
+                val synced = message.synced
+                val plain = message.lyrics ?: synced?.let(::lrcToPlainText)
+                if (plain != null) incomingLyrics[id] = LyricsDomain(lyrics = plain, synced = synced)
+            }
             NearbyMessage.FILE_FAILED -> message.songId?.let { songId ->
                 if (removeTransfer(requestKey(endpointId, songId))) {
                     _state.update { it.copy(error = "${friendName(endpointId)}'s phone couldn't send that song") }
@@ -561,6 +710,7 @@ class NearbyManager(
 
     private fun send(endpointId: String, message: NearbyMessage) {
         val bytes = gson.toJson(message).toByteArray()
+        if (bytes.size > MAX_MESSAGE_BYTES) return // e.g. very long lyrics: the song goes without them
         client.sendPayload(endpointId, Payload.fromBytes(bytes))
     }
 
@@ -573,6 +723,7 @@ class NearbyManager(
     }
 
     private fun removeFriend(endpointId: String) {
+        party.onFriendDisconnected(endpointId)
         names.remove(endpointId)
         _state.update { state ->
             state.copy(
@@ -628,8 +779,16 @@ class NearbyManager(
 
         const val KEY_NAME = "device_name"
 
-        /** folder in the app's cache for songs friends sent */
-        const val RECEIVED_DIR = "nearby_songs"
-        const val KEEP_RECEIVED_SONGS = 10
+        const val KEY_LET_SAVE = "let_friends_save"
+
+        /** a sent song's picture: this many pixels at most, and short enough for one message */
+        const val ART_SIZE = 300
+        const val MAX_ART_CHARS = 28_000
+
+        /** this much of a song is enough to start playing it (the rest streams in) */
+        const val READY_BYTES = 64 * 1024L
+
+        /** Nearby's limit for one message is 32 KB */
+        const val MAX_MESSAGE_BYTES = 32_000
     }
 }

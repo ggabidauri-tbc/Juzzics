@@ -1,5 +1,6 @@
 package com.example.juzzics.features.musics.ui.vm.logics
 
+import com.example.juzzics.features.lyrics.domain.util.suggestName
 import com.example.juzzics.features.musics.ui.model.knownArtist
 import com.example.juzzics.features.musics.ui.vm.MusicVM
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.CLICKED_MUSIC
@@ -25,6 +26,8 @@ fun MusicVM.lookUpLyricsIfMissing() {
             .onSuccess {
                 saveLyricsUseCase(song.id, it)
                 LYRICS_STATUS("")
+                // a messy name and a sure match: suggest the match's name (Home > Fix song names)
+                suggestName(song.id, title, song.knownArtist, it.match)?.let(songSettings::suggest)
             }
             .onFailure { LYRICS_STATUS("No lyrics found, tap here to search") }
     }

@@ -76,7 +76,9 @@ import com.example.juzzics.common.base.viewModel.invoke
 import com.example.juzzics.common.base.viewModel.not
 import com.example.juzzics.common.uiComponents.EmptyState
 import com.example.juzzics.features.musics.ui.components.toClock
+import com.example.juzzics.features.nearby.data.ReceivedSong
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
+import com.example.juzzics.features.nearby.domain.PartyRole
 import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
 import com.example.juzzics.features.nearby.domain.PendingConnection
@@ -129,6 +131,22 @@ fun NearbyScreen(
         ) { granted = allGranted() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { granted = allGranted() }
 
+        // saving a song a friend sent: Android 9 and older ask for storage access first
+        var pendingSave by remember { mutableStateOf<Long?>(null) }
+        val storageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+            pendingSave?.let { id -> if (ok) onAction(NearbyVM.SaveReceivedAction(id)) }
+            pendingSave = null
+        }
+        val saveReceived: (Long) -> Unit = { id ->
+            val needsPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                    PackageManager.PERMISSION_GRANTED
+            if (needsPermission) {
+                pendingSave = id
+                storageLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            } else onAction(NearbyVM.SaveReceivedAction(id))
+        }
+
         val nearby = NEARBY()
         val openFriend = OPEN_FRIEND()?.let { id -> nearby.friends.find { it.endpointId == id } }
 
@@ -166,7 +184,7 @@ fun NearbyScreen(
                     onAction = onAction,
                 )
 
-                else -> NearbyHome(nearby = nearby, onAction = onAction)
+                else -> NearbyHome(nearby = nearby, received = RECEIVED(), onSave = saveReceived, onAction = onAction)
             }
         }
 
@@ -179,11 +197,23 @@ fun NearbyScreen(
                 confirmButton = { TextButton(onClick = { onAction(NearbyVM.DismissErrorAction) }) { Text("OK") } }
             )
         }
+        MESSAGE()?.let { message ->
+            AlertDialog(
+                onDismissRequest = { onAction(NearbyVM.DismissMessageAction) },
+                text = { Text(message) },
+                confirmButton = { TextButton(onClick = { onAction(NearbyVM.DismissMessageAction) }) { Text("OK") } }
+            )
+        }
     }
 }
 
 @Composable
-private fun NearbyHome(nearby: NearbyState, onAction: (Action) -> Unit) {
+private fun NearbyHome(
+    nearby: NearbyState,
+    received: List<ReceivedSong>,
+    onSave: (Long) -> Unit,
+    onAction: (Action) -> Unit,
+) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -202,12 +232,33 @@ private fun NearbyHome(nearby: NearbyState, onAction: (Action) -> Unit) {
             item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(vertical = 8.dp)) { Transfers(nearby.transfers) } } }
         }
 
+        if (nearby.friends.isNotEmpty() || nearby.party.role != PartyRole.NONE) {
+            item {
+                PartyCard(
+                    party = nearby.party,
+                    hasFriends = nearby.friends.isNotEmpty(),
+                    onStart = { onAction(NearbyVM.StartPartyAction) },
+                    onEnd = { onAction(NearbyVM.EndPartyAction) },
+                )
+            }
+        }
+
         if (nearby.friends.isNotEmpty()) {
             item { Text("Connected", style = MaterialTheme.typography.titleLarge) }
             items(nearby.friends, key = { it.endpointId }) { friend -> FriendCard(friend, onAction) }
         }
 
         item { FindFriendsCard(nearby, onAction) }
+
+        if (received.isNotEmpty()) {
+            item {
+                ReceivedSongsCard(
+                    songs = received,
+                    onPlay = { onAction(NearbyVM.PlayReceivedAction(it)) },
+                    onSave = onSave,
+                )
+            }
+        }
     }
 }
 
@@ -226,6 +277,18 @@ private fun ShareCard(nearby: NearbyState, onAction: (Action) -> Unit) {
                     )
                 }
                 Switch(checked = nearby.sharing, onCheckedChange = { onAction(NearbyVM.SetSharingAction(it)) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Friends can save my songs", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (nearby.letFriendsSave) "Songs you send can be kept on their phone"
+                        else "Songs you send can only be listened to",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = nearby.letFriendsSave, onCheckedChange = { onAction(NearbyVM.LetFriendsSaveAction(it)) })
             }
             var name by remember(nearby.deviceName) { mutableStateOf(nearby.deviceName) }
             OutlinedTextField(

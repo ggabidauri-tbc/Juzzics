@@ -5,6 +5,10 @@ import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseViewModel
 import com.example.juzzics.common.base.viewModel.StateKey
 import com.example.juzzics.features.nearby.data.NearbyManager
+import com.example.juzzics.features.nearby.data.ReceivedSong
+import com.example.juzzics.features.nearby.data.ReceivedSongs
+import com.example.juzzics.features.player.OpenPlayerRequests
+import com.example.juzzics.features.player.PlayerController
 import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
 import com.example.juzzics.features.nearby.domain.RemoteCommand
@@ -13,7 +17,9 @@ import kotlinx.coroutines.launch
 
 class NearbyVM(
     private val nearby: NearbyManager,
-) : BaseViewModel(listOf(NEARBY, OPEN_FRIEND, FRIEND_QUERY, LISTEN_HERE, SEND_MODE, MY_SONGS)) {
+    private val received: ReceivedSongs,
+    private val player: PlayerController,
+) : BaseViewModel(listOf(NEARBY, OPEN_FRIEND, FRIEND_QUERY, LISTEN_HERE, SEND_MODE, MY_SONGS, RECEIVED, MESSAGE)) {
 
     companion object {
         /** connections, found phones, friends and their songs */
@@ -27,10 +33,15 @@ class NearbyVM(
         val SEND_MODE = StateKey("sendMode", false)
         /** this phone's songs (null until loaded) */
         val MY_SONGS = StateKey<List<RemoteSong>?>("mySongs", null)
+        /** songs friends sent, newest first */
+        val RECEIVED = StateKey<List<ReceivedSong>>("received", emptyList())
+        /** a message for the user (e.g. "Saved to Music/Juzzics") */
+        val MESSAGE = StateKey<String?>("message", null)
     }
 
     init {
         nearby.state.collectIn(NEARBY)
+        received.songs.collectIn(RECEIVED)
     }
 
     override fun onAction(action: Action) {
@@ -64,6 +75,19 @@ class NearbyVM(
             is CommandAction -> nearby.sendCommand(action.endpointId, action.command)
             is RefreshLibraryAction -> nearby.requestLibrary(action.endpointId)
             is DismissErrorAction -> nearby.clearError()
+            is LetFriendsSaveAction -> nearby.setLetFriendsSave(action.allow)
+            is StartPartyAction -> nearby.startParty()
+            is EndPartyAction -> nearby.endParty()
+            is PlayReceivedAction -> received.find(action.songId)?.let { song ->
+                player.playQueue(listOf(received.toMusicFile(song)), 0, source = "From ${song.from}")
+                OpenPlayerRequests.request()
+            }
+            is SaveReceivedAction -> launch(emitLoadingAction = false) {
+                received.saveToLibrary(action.songId)
+                    .onSuccess { MESSAGE("Saved to Music/Juzzics. It shows up in your songs next time the app opens.") }
+                    .onFailure { MESSAGE("Couldn't save it: ${it.message}") }
+            }
+            is DismissMessageAction -> MESSAGE(null)
         }
     }
 
@@ -86,4 +110,11 @@ class NearbyVM(
     data class CommandAction(val endpointId: String, val command: RemoteCommand) : Action
     data class RefreshLibraryAction(val endpointId: String) : Action
     data object DismissErrorAction : Action
+    data class LetFriendsSaveAction(val allow: Boolean) : Action
+    data object StartPartyAction : Action
+    /** host: ends it for everyone; guest: leaves */
+    data object EndPartyAction : Action
+    data class PlayReceivedAction(val songId: Long) : Action
+    data class SaveReceivedAction(val songId: Long) : Action
+    data object DismissMessageAction : Action
 }

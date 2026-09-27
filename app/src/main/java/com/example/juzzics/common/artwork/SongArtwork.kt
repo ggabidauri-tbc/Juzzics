@@ -16,6 +16,7 @@ import coil.fetch.FetchResult
 import coil.fetch.Fetcher
 import coil.key.Keyer
 import coil.request.Options
+import com.example.juzzics.common.songs.ReceivedSongFiles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -57,9 +58,16 @@ class SongArtworkKeyer : Keyer<SongArtwork> {
     override fun key(data: SongArtwork, options: Options): String = "song_artwork_${data.songId}"
 }
 
-/** thumbnail from the system (Android 10+), else the picture embedded in the file; null if none */
+/**
+ * thumbnail from the system (Android 10+), else the picture embedded in the file; null if none.
+ * Songs friends sent (negative ids) use the picture that came with them.
+ */
 fun loadSongArtwork(context: Context, songId: Long): Bitmap? {
-    if (songId <= 0) return null
+    if (songId < 0) {
+        val file = ReceivedSongFiles.artwork(context, songId)
+        return if (file.exists()) BitmapFactory.decodeFile(file.absolutePath) else null
+    }
+    if (songId == 0L) return null
     val songUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

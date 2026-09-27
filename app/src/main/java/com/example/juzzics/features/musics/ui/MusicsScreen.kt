@@ -296,6 +296,10 @@ fun MusicsScreen(
                             synced != null -> SyncedLyricsView(
                                 lines = remember(synced) { parseLrc(synced) },
                                 positionMs = { PROGRESS.stateValue().positionMs },
+                                isPlaying = IS_PLAYING(),
+                                active = sceneName == FOURTH,
+                                offsetMs = clickedMusic?.id?.let { LYRICS_OFFSETS()[it] } ?: 0L,
+                                onShift = { onAction(MusicVM.ShiftLyricsAction(it)) },
                                 onSeek = { ms -> onAction(MusicVM.SeekToMsAction(ms)) },
                                 modifier = Modifier.fillMaxSize()
                             )
