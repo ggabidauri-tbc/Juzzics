@@ -10,7 +10,6 @@ val serviceModule = module {
     single {
         Retrofit.Builder()
             .baseUrl(LYRICS_BASE_URL)
-//            .baseUrl(get<String>(named(BASE_URL)))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }

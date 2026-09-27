@@ -1,12 +1,8 @@
 package com.example.juzzics.features.musics.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideOut
 import androidx.compose.foundation.MarqueeAnimationMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -51,7 +47,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,7 +75,7 @@ import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.vm.MusicVM
 import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FIFTH
 import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FIRST
-import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FORTH
+import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FOURTH
 import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.SECOND
 import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.THIRD
 import kotlinx.collections.immutable.ImmutableList
@@ -91,7 +86,8 @@ import kotlinx.coroutines.flow.SharedFlow
 fun MusicsScreen(
     states: BaseState,
     uiEvent: SharedFlow<UiEvent>,
-    onAction: (Action) -> Unit
+    onAction: (Action) -> Unit,
+    onAddToPlaylist: ((MusicFileUi) -> Unit)? = null
 ) {
     with2(states, MusicVM) {
         Surface(
@@ -100,8 +96,8 @@ fun MusicsScreen(
         ) {
             BackHandler(!SCENE_NAME != FIRST) {
                 when (SCENE_NAME.stateValue<String>()) {
-                    FIFTH -> onAction(MusicVM.UpdateSceneAction(FORTH))
-                    FORTH -> onAction(MusicVM.UpdateSceneAction(THIRD))
+                    FIFTH -> onAction(MusicVM.UpdateSceneAction(FOURTH))
+                    FOURTH -> onAction(MusicVM.UpdateSceneAction(THIRD))
                     THIRD -> onAction(MusicVM.UpdateSceneAction(SECOND))
                     SECOND -> {
                         onAction(MusicVM.UpdateSceneAction(FIRST))
@@ -126,7 +122,6 @@ fun MusicsScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
-//                        .onSizeChanged { size -> componentHeight = size.height.toFloat() }
                 ) {
                     val clickedMusic = CLICKED_MUSIC<MusicFileUi>()
                     val isPlaying = IS_PLAYING() ?: false
@@ -139,11 +134,16 @@ fun MusicsScreen(
                         lazyListState = lazyListState,
                         onDragEnd = { onAction(MusicVM.OnDragEndAction(it)) },
                         onClick = {
-                            if (SCENE_NAME.stateValue<String>() !in listOf(THIRD, FORTH))
+                            if (SCENE_NAME.stateValue<String>() !in listOf(THIRD, FOURTH))
                                 onAction(MusicVM.PlayMusicAction(it))
                         }
-                    ) {
-                        MusicListItem(it)
+                    ) { musicItem ->
+                        MusicListItem(
+                            musicFile = musicItem,
+                            onAddToPlaylist = if (onAddToPlaylist != null) {
+                                { onAddToPlaylist(musicItem) }
+                            } else null
+                        )
                     }
                     Box(
                         modifier = Modifier
@@ -179,11 +179,7 @@ fun MusicsScreen(
                         placeholder = painterResource(id = R.drawable.ic_launcher_foreground),
                         modifier = Modifier
                             .layoutId("icon")
-                            .aspectRatio(
-                                //if (swipeAbleState.currentValue == "Bottom") 2f else 0.8f,//todo: animate
-                                1f,
-                                true
-                            ),
+                            .aspectRatio(1f, matchHeightConstraintsFirst = true),
                         contentScale = ContentScale.Fit,
                     )
                     MusicProgress(
@@ -215,7 +211,6 @@ fun MusicsScreen(
                     ) {
                         Text(
                             modifier = Modifier
-//                                .layoutId("lyrics")
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(Color.DarkGray)
                                 .clickable { onAction(MusicVM.FindLyricsClickedAction) }

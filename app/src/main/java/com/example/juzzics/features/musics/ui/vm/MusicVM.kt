@@ -49,7 +49,7 @@ class MusicVM(
         const val MEDIA_PLAYER = "mediaPlayer"
         const val CLICKED_MUSIC = "clickedMusic"
         const val IS_PLAYING = "isPlaying"
-        const val SCROLL_POSITION = "Scroll_POSISION"
+        const val SCROLL_POSITION = "scrollPosition"
         const val SCENE_NAME = "sceneName"
 
         const val LYRICS = "Lyrics"
@@ -61,7 +61,7 @@ class MusicVM(
         const val FIRST = "1"
         const val SECOND = "2"
         const val THIRD = "3"
-        const val FORTH = "4"
+        const val FOURTH = "4"
         const val FIFTH = "5"
     }
 

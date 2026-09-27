@@ -220,7 +220,7 @@ val motionScene = MotionScene {
             bottom.linkTo(downArrow.top, 16.dp)
         }
     }
-    constraintSet(MusicVM.MotionScenes.FORTH) {
+    constraintSet(MusicVM.MotionScenes.FOURTH) {
         allViews.except(lyrics, downArrow, searchLyricsScreen, tieLyrics, editLyrics).forEach {
             constrain(it) {
                 bottom.linkTo(parent.top)
@@ -285,7 +285,6 @@ val motionScene = MotionScene {
             top.linkTo(musicName.bottom, 50.dp)
             bottom.linkTo(tieLyrics.top, 16.dp)
             centerHorizontallyTo(parent)
-//            width = Dimension.fillToConstraints
         }
         constrain(tieLyrics) {
             bottom.linkTo(parent.bottom, 16.dp)

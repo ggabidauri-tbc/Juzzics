@@ -6,14 +6,10 @@ import android.media.MediaPlayer
 import android.provider.MediaStore
 import com.example.juzzics.features.musics.ui.model.MusicFileUi
 import com.example.juzzics.features.musics.ui.vm.MusicVM
-import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.CLICKED_MUSIC
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.IS_PLAYING
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.MEDIA_PLAYER
 import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.MUSIC_LIST
-import com.example.juzzics.features.musics.ui.vm.MusicVM.Companion.SCENE_NAME
-import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FIRST
-import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.SECOND
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 
@@ -21,7 +17,7 @@ fun MusicVM.playMusicLogic(musicFile: MusicFileUi?, context: Application, pause:
     val mediaPlayer = MEDIA_PLAYER<MediaPlayer>()
     val musicList = MUSIC_LIST<ImmutableList<MusicFileUi>>()
     val clickedMusic = CLICKED_MUSIC<MusicFileUi>()
-    fun onSameMusicCLicked() {
+    fun onSameMusicClicked() {
         if (mediaPlayer?.isPlaying == true || pause) {
             mediaPlayer?.pause()
             IS_PLAYING(false)
@@ -53,7 +49,7 @@ fun MusicVM.playMusicLogic(musicFile: MusicFileUi?, context: Application, pause:
     }
 
     if (musicFile?.id == clickedMusic?.id) {
-        onSameMusicCLicked()
+        onSameMusicClicked()
     } else {
         onNewMusicClicked()
     }
