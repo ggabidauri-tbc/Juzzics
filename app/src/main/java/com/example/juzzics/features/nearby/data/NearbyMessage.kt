@@ -69,6 +69,8 @@ data class NearbyMessage(
     val hops: Int? = null,
     /** CHAT: the message */
     val text: String? = null,
+    /** CHAT_ACK: which message arrived ("sender's phone id/its counter") */
+    val ack: String? = null,
 ) {
     companion object {
         /** "send me your songs" */
@@ -109,6 +111,8 @@ data class NearbyMessage(
         const val PURPOSE_BLEND = "blend"
         /** a voice message, played over the music */
         const val PURPOSE_SHOUTOUT = "shoutout"
+        /** photo drop: a photo for everyone, shown in the group chat ([text]: its caption) */
+        const val PURPOSE_PHOTO = "photo"
 
         /** sing-along: "the stream [payloadId] coming now is my live voice, play it over your music" */
         const val MIC_START = "mic_start"
@@ -123,6 +127,8 @@ data class NearbyMessage(
         const val HELLO = "hello"
         /** the answer to HELLO's challenge */
         const val PROOF = "proof"
+        /** "still here" (every few seconds: a connection that quietly broke shows up as a failed send) */
+        const val PING = "ping"
         /** "I'm disconnecting on purpose, don't reconnect" */
         const val BYE = "bye"
         /** "I don't recognize you (any more)": forget the pairing, compare codes next time */
@@ -136,6 +142,8 @@ data class NearbyMessage(
 
         /** group chat: [text], maybe with where the sender is ([lat] / [lon]) */
         const val CHAT = "chat"
+        /** "your message [ack] arrived here" (back to its sender, through friends' phones if needed) */
+        const val CHAT_ACK = "chat_ack"
 
         /** MIC_START: a walkie-talkie message (to everyone, played over the music, music ducked) */
         const val PURPOSE_WALKIE = "walkie"

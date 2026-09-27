@@ -2,4 +2,6 @@
 <!-- files Juzzics hands to other apps (the share sheet): only this folder in the cache -->
 <paths>
     <cache-path name="shared" path="shared/" />
+    <!-- photo drop: a photo taken with the camera app, before it's sent -->
+    <cache-path name="camera" path="camera/" />
 </paths>

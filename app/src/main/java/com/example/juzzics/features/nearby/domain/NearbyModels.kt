@@ -107,6 +107,12 @@ data class ChatMessage(
     val lon: Double? = null,
     /** came through other phones */
     val relayed: Boolean = false,
+    /** photo drop: the photo (a file on this phone), [text] is its caption */
+    val photoPath: String? = null,
+    /** mine, written while nobody was connected: goes out when someone is back */
+    val pending: Boolean = false,
+    /** mine: who it arrived at (their phone id to name), from their receipts */
+    val deliveredTo: Map<String, String> = emptyMap(),
 )
 
 /** A song file on its way between two phones. */

@@ -9,6 +9,9 @@ import android.util.Base64
 import android.content.Context
 import android.media.AudioManager
 import android.os.Build
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.net.Uri
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
@@ -64,6 +67,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.OutputStream
 
 /**
  * Connects phones running Juzzics without internet (Google Nearby Connections:
@@ -202,7 +206,9 @@ class NearbyManager(
     fun sendChat(text: String, withLocation: Boolean) {
         val clean = text.trim().take(MAX_CHAT_CHARS)
         if (clean.isEmpty()) return
-        if (_state.value.friends.isEmpty()) {
+        val nobody = _state.value.friends.isEmpty()
+        // nobody connected and nobody to wait for: nowhere it could go
+        if (nobody && lost.isEmpty()) {
             AppMessages.show("Connect to a friend first")
             return
         }
@@ -212,6 +218,7 @@ class NearbyManager(
             NearbyMessage(NearbyMessage.CHAT, text = clean, lat = here?.lat, lon = here?.lon, accuracy = here?.accuracyM)
         )
         _state.value.friends.forEach { send(it.endpointId, stamped) }
+        remember(stamped)
         addChat(
             ChatMessage(
                 id = "${book.myId}/${stamped.seq}",
@@ -221,8 +228,30 @@ class NearbyManager(
                 atMs = System.currentTimeMillis(),
                 lat = here?.lat,
                 lon = here?.lon,
+                // a friend dropped out: it goes out as soon as they're back
+                pending = nobody,
             )
         )
+    }
+
+    /**
+     * the last half hour of chat (as sent), passed to anyone who (re)connects: what they missed
+     * while out of range arrives then (what they already have is skipped, see [Mesh])
+     */
+    private val recentChat = ArrayDeque<NearbyMessage>()
+
+    private fun remember(message: NearbyMessage) {
+        recentChat.addLast(message)
+        while (recentChat.size > MAX_CATCH_UP) recentChat.removeFirst()
+    }
+
+    /** [endpointId] just (re)connected: the chat it may have missed, and what waited for it */
+    private fun catchUp(endpointId: String) {
+        val since = System.currentTimeMillis() - CATCH_UP_MS
+        recentChat.filter { (it.seq ?: 0L) >= since }.forEach { send(endpointId, it) }
+        if (_state.value.chat.any { it.pending }) {
+            _state.update { state -> state.copy(chat = state.chat.map { if (it.pending) it.copy(pending = false) else it }) }
+        }
     }
 
     private fun receiveChat(endpointId: String, message: NearbyMessage) {
@@ -233,27 +262,183 @@ class NearbyManager(
         val lat = message.lat
         val lon = message.lon
         if (lat != null && lon != null) radar.notePosition(personId, name, lat, lon, message.accuracy, relayed)
+        remember(message)
+        // (the sender's counter is the time it was written: a message caught up later keeps its time)
+        val now = System.currentTimeMillis()
+        val written = message.seq?.takeIf { it in (now - CATCH_UP_MS * 2)..now + 60_000 } ?: now
         addChat(
             ChatMessage(
                 id = "$personId/${message.seq ?: System.nanoTime()}",
                 from = name,
                 fromMe = false,
                 text = text,
-                atMs = System.currentTimeMillis(),
+                atMs = written,
                 personId = personId,
                 lat = lat,
                 lon = lon,
                 relayed = relayed,
             )
         )
+        acknowledge(message.origin, message.seq)
+        notifyChat(name, text)
+    }
+
+    /** "arrived": a receipt back to the sender (through friends' phones if needed) */
+    private fun acknowledge(origin: String?, seq: Long?) {
+        if (origin == null || seq == null || origin == book.myId) return
+        broadcastMesh(NearbyMessage(NearbyMessage.CHAT_ACK, ack = "$origin/$seq"))
+    }
+
+    /** a receipt: if it's for one of ours, who has it now */
+    private fun receiveAck(endpointId: String, message: NearbyMessage) {
+        val id = message.ack ?: return
+        if (!id.startsWith("${book.myId}/")) return
+        val who = message.origin ?: phoneIds[endpointId] ?: endpointId
+        val name = message.originName ?: friendName(endpointId)
+        _state.update { state ->
+            state.copy(chat = state.chat.map {
+                if (it.id == id && it.fromMe && who !in it.deliveredTo) it.copy(deliveredTo = it.deliveredTo + (who to name), pending = false)
+                else it
+            })
+        }
+    }
+
+    /**
+     * ours that nobody confirmed yet (sent into a connection that was just breaking, say):
+     * sent again to whoever is connected (a copy someone already has is skipped there)
+     */
+    private fun resendUnconfirmed() {
+        val friends = _state.value.friends.map { it.endpointId }
+        if (friends.isEmpty()) return
+        val unconfirmed = _state.value.chat.filter { it.fromMe && it.photoPath == null && it.deliveredTo.isEmpty() }.map { it.id }.toSet()
+        if (unconfirmed.isEmpty()) return
+        val since = System.currentTimeMillis() - CATCH_UP_MS
+        recentChat
+            .filter { it.origin == book.myId && (it.seq ?: 0L) >= since && "${book.myId}/${it.seq}" in unconfirmed }
+            .forEach { message -> friends.forEach { send(it, message) } }
+    }
+
+    /** unread + a notification, unless the chat is on screen */
+    private fun notifyChat(name: String, text: String) {
         if (chatOpen) return
         _state.update { it.copy(unreadChat = it.unreadChat + 1) }
         // a real notification also while the app is open (only not with the chat on screen)
         alerts.chat(name, text, _state.value.unreadChat)
     }
 
+    // ---------------------- photo drop ----------------------
+
+    /** photos sent and received (this session; old ones are cleared when the app starts) */
+    private val photosDir = File(context.cacheDir, "nearby_photos").apply { mkdirs() }
+
+    init {
+        scope.launch(Dispatchers.IO) {
+            val old = System.currentTimeMillis() - PHOTO_KEEP_MS
+            photosDir.listFiles()?.filter { it.lastModified() < old }?.forEach { it.delete() }
+        }
+    }
+
+    /** a photo to everyone (and on through their phones), shown in the group chat */
+    fun sendPhoto(uri: Uri, caption: String) {
+        val friends = _state.value.friends.map { it.endpointId }
+        if (friends.isEmpty()) {
+            AppMessages.show("Connect to a friend first")
+            return
+        }
+        scope.launch {
+            // smaller (a phone photo is 3-10 MB; this is a few hundred KB and still sharp on a phone)
+            val photo = withContext(Dispatchers.IO) { runCatching { shrinkPhoto(uri) }.getOrNull() }
+            if (photo == null) {
+                AppMessages.show("Couldn't open that photo")
+                return@launch
+            }
+            val clean = caption.trim().take(MAX_CHAT_CHARS)
+            val info = mesh.stamp(
+                NearbyMessage(
+                    NearbyMessage.FILE_INFO,
+                    sizeBytes = photo.length(),
+                    purpose = NearbyMessage.PURPOSE_PHOTO,
+                    text = clean.ifEmpty { null },
+                )
+            )
+            sendFileTo(photo, info, _state.value.friends.map { it.endpointId })
+            addChat(
+                ChatMessage(
+                    id = "${book.myId}/${info.seq}",
+                    from = "You",
+                    fromMe = true,
+                    text = clean,
+                    atMs = System.currentTimeMillis(),
+                    photoPath = photo.absolutePath,
+                )
+            )
+        }
+    }
+
+    /** decodes [uri] upright, at most [MAX_PHOTO_PX] on the long side, as a JPEG file */
+    private fun shrinkPhoto(uri: Uri): File {
+        val bitmap: Bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // (turns camera photos upright by itself)
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
+                val scale = minOf(1f, MAX_PHOTO_PX.toFloat() / maxOf(info.size.width, info.size.height))
+                decoder.setTargetSize((info.size.width * scale).toInt().coerceAtLeast(1), (info.size.height * scale).toInt().coerceAtLeast(1))
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        } else {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, bounds) }
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_PHOTO_PX) sample *= 2
+            val decoded = context.contentResolver.openInputStream(uri).use {
+                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+            } ?: error("not an image")
+            val scale = minOf(1f, MAX_PHOTO_PX.toFloat() / maxOf(decoded.width, decoded.height))
+            if (scale < 1f) Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt(), (decoded.height * scale).toInt(), true)
+            else decoded
+        }
+        val file = File(photosDir, "me_${System.currentTimeMillis()}.jpg")
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, PHOTO_QUALITY, it) }
+        return file
+    }
+
+    /** a photo arrived: into the chat, and on to friends out of the sender's range */
+    private fun receivePhoto(endpointId: String, file: File, info: NearbyMessage) {
+        val origin = info.origin
+        // our own come back, or the same photo a second way
+        if (origin == book.myId || (origin != null && !firstTime("photo/$origin/${info.seq}"))) {
+            file.delete()
+            return
+        }
+        val photo = File(photosDir, "${origin ?: endpointId}_${info.seq ?: System.nanoTime()}.jpg")
+        if (!file.renameTo(photo)) {
+            runCatching { file.copyTo(photo, overwrite = true) }
+            file.delete()
+        }
+        mesh.forwarded(info)?.let { onward ->
+            val targets = _state.value.friends.map { it.endpointId }.filter { it != endpointId }
+            if (targets.isNotEmpty()) sendFileTo(photo, onward.copy(sizeBytes = photo.length()), targets)
+        }
+        val name = info.originName ?: friendName(endpointId)
+        val caption = info.text?.trim()?.take(MAX_CHAT_CHARS).orEmpty()
+        addChat(
+            ChatMessage(
+                id = "${origin ?: endpointId}/${info.seq ?: System.nanoTime()}",
+                from = name,
+                fromMe = false,
+                text = caption,
+                atMs = System.currentTimeMillis(),
+                personId = origin,
+                relayed = (info.hops ?: 0) > 0,
+                photoPath = photo.absolutePath,
+            )
+        )
+        acknowledge(origin, info.seq)
+        notifyChat(name, if (caption.isEmpty()) "📷 Photo" else "📷 $caption")
+    }
+
     private fun addChat(message: ChatMessage) {
-        _state.update { it.copy(chat = (it.chat + message).takeLast(MAX_CHAT_MESSAGES)) }
+        // in order of writing (a caught-up message can be older than the last one shown)
+        _state.update { state -> state.copy(chat = (state.chat + message).sortedBy { it.atMs }.takeLast(MAX_CHAT_MESSAGES)) }
     }
 
     /** friend radar: where this phone points (degrees from north), while the radar is open */
@@ -294,8 +479,8 @@ class NearbyManager(
     private val liveMic = LiveMic(context)
     /** live voice streams announced by MIC_START: payload id to sample rate */
     private val micStreams = mutableMapOf<Long, Int>()
-    /** the ones of them that are walkie-talkie messages */
-    private val walkieStreams = mutableSetOf<Long>()
+    /** the ones of them that are walkie-talkie messages (their MIC_START: who talks, relayed or not) */
+    private val walkieStreams = mutableMapOf<Long, NearbyMessage>()
     /** who's singing through this phone */
     private var singerId: String? = null
 
@@ -479,9 +664,13 @@ class NearbyManager(
                 reconnectScanning = true
                 refreshDiscovery()
                 delay(RECONNECT_SCAN_MS)
+                // right after a drop (Wi-Fi turned off, a few steps too far) they're most likely
+                // still close: look almost without a break for the first 2 minutes
+                val justLost = System.currentTimeMillis() - (lost.values.maxOrNull() ?: 0L) < FAST_RECONNECT_MS
+                // (a short stop in between: a new search reports phones seen before again)
                 reconnectScanning = false
                 refreshDiscovery()
-                delay(RECONNECT_PAUSE_MS)
+                delay(if (justLost) 2_000L else RECONNECT_PAUSE_MS)
                 updateReconnect()
             }
         }
@@ -716,9 +905,11 @@ class NearbyManager(
             return
         }
         val payload = Payload.fromStream(voice)
-        friends.forEach {
-            send(it, NearbyMessage(NearbyMessage.MIC_START, payloadId = payload.id, sampleRate = LiveMic.SAMPLE_RATE, purpose = NearbyMessage.PURPOSE_WALKIE))
-        }
+        // who's talking (and which talk), so friends can pass it on to phones out of our range
+        val start = mesh.stamp(
+            NearbyMessage(NearbyMessage.MIC_START, payloadId = payload.id, sampleRate = LiveMic.SAMPLE_RATE, purpose = NearbyMessage.PURPOSE_WALKIE)
+        )
+        friends.forEach { send(it, start) }
         client.sendPayload(friends, payload).addOnFailureListener { stopTalking() }
         _state.update { it.copy(talking = true) }
         talkLimit = scope.launch {
@@ -736,21 +927,56 @@ class NearbyManager(
     }
 
     /** a friend talks: beep, music quieter, their voice */
-    private fun listenToTalker(endpointId: String, payload: Payload, sampleRate: Int) {
+    private fun listenToTalker(endpointId: String, payload: Payload, sampleRate: Int, info: NearbyMessage?) {
         val voice = payload.asStream()?.asInputStream() ?: return
+        // this phone's own voice come back, or the same talk by a second way: once is enough
+        val origin = info?.origin
+        if (origin == book.myId || (origin != null && !firstTime("$origin/${info.seq}"))) {
+            runCatching { voice.close() }
+            return
+        }
         // a friend singing through this phone, or another talking, has the speaker
         if (singerId != null || (talkerId != null && talkerId != endpointId)) {
             runCatching { voice.close() }
             return
         }
         talkerId = endpointId
-        _state.update { it.copy(talker = friendName(endpointId)) }
+        val name = info?.originName ?: friendName(endpointId)
+        _state.update { it.copy(talker = if ((info?.hops ?: 0) > 0) "$name (via friends)" else name) }
         alerts.talkStart()
         player.duck(true)
-        liveMic.listen(voice, sampleRate) {
+        liveMic.listen(voice, sampleRate, forward = info?.let { relayVoice(endpointId, it) }) {
             // (on the audio thread)
             scope.launch { if (talkerId == endpointId) endTalker() }
         }
+    }
+
+    /** voices (walkie-talkie, shout-outs) heard, by who + which: each plays once */
+    private val heardVoices = LinkedHashSet<String>()
+
+    private fun firstTime(key: String): Boolean {
+        if (!heardVoices.add(key)) return false
+        if (heardVoices.size > 200) heardVoices.remove(heardVoices.first())
+        return true
+    }
+
+    /**
+     * passes a friend's live voice on to the other friends (the ones out of the talker's range
+     * hear it through this phone): a new live stream to them, fed as the voice arrives.
+     * null: nobody to pass it to, or it went far enough
+     */
+    private fun relayVoice(fromEndpoint: String, info: NearbyMessage): OutputStream? {
+        val onward = mesh.forwarded(info) ?: return null
+        val targets = _state.value.friends.map { it.endpointId }.filter { it != fromEndpoint }
+        if (targets.isEmpty()) return null
+        return runCatching {
+            val (readSide, writeSide) = ParcelFileDescriptor.createPipe().let { it[0] to it[1] }
+            val payload = Payload.fromStream(readSide)
+            val start = onward.copy(payloadId = payload.id)
+            targets.forEach { send(it, start) }
+            client.sendPayload(targets, payload)
+            ParcelFileDescriptor.AutoCloseOutputStream(writeSide)
+        }.getOrNull()
     }
 
     /** the walkie-talkie voice is over: music back up */
@@ -776,21 +1002,11 @@ class NearbyManager(
             return
         }
         val voice = shoutOuts.stopRecording() ?: return
-        _state.value.friends.forEach { friend ->
-            runCatching {
-                val payload = Payload.fromStream(ParcelFileDescriptor.open(voice, ParcelFileDescriptor.MODE_READ_ONLY))
-                send(
-                    friend.endpointId,
-                    NearbyMessage(
-                        NearbyMessage.FILE_INFO,
-                        payloadId = payload.id,
-                        sizeBytes = voice.length(),
-                        purpose = NearbyMessage.PURPOSE_SHOUTOUT,
-                    )
-                )
-                client.sendPayload(friend.endpointId, payload)
-            }
-        }
+        // who said it (and which one), so friends pass it on to phones out of our range
+        val info = mesh.stamp(
+            NearbyMessage(NearbyMessage.FILE_INFO, sizeBytes = voice.length(), purpose = NearbyMessage.PURPOSE_SHOUTOUT)
+        )
+        sendFileTo(voice, info, _state.value.friends.map { it.endpointId })
         // the open streams keep reading it; the file itself can go
         scope.launch {
             delay(60_000)
@@ -915,7 +1131,7 @@ class NearbyManager(
         song.path?.let { GrowingFiles.setTotalBytes(it, message.sizeBytes ?: -1L) }
         val asked = removeTransfer(requestKey(endpointId, message.songId ?: 0L))
         if (asked) requestedPayloads += payloadId
-        if (message.purpose != NearbyMessage.PURPOSE_SHOUTOUT) addTransfer(
+        if (message.purpose != NearbyMessage.PURPOSE_SHOUTOUT && message.purpose != NearbyMessage.PURPOSE_PHOTO) addTransfer(
             SongTransfer(inKey(payloadId), endpointId, message.title.orEmpty(), friendName(endpointId), incoming = true, progress = 0f)
         )
         announceIfReady(song)
@@ -974,11 +1190,31 @@ class NearbyManager(
         val info = song.info ?: return
         val path = song.path ?: return
         if (song.announced || song.failed) return
+        if (info.purpose == NearbyMessage.PURPOSE_PHOTO) {
+            // a photo: shown once it's all here
+            if (!complete) return
+            song.announced = true
+            receivePhoto(song.endpointId, File(path), info)
+            return
+        }
         if (info.purpose == NearbyMessage.PURPOSE_SHOUTOUT) {
             // a voice message: small, played once it's all here, not kept
             if (!complete) return
             song.announced = true
-            playShoutOut(File(path), friendName(song.endpointId))
+            val file = File(path)
+            val origin = info.origin
+            // the same shout-out a second way (or our own come back): once is enough
+            if (origin == book.myId || (origin != null && !firstTime("$origin/${info.seq}"))) {
+                file.delete()
+                return
+            }
+            // on to friends out of the speaker's range (opened before playing deletes the file)
+            mesh.forwarded(info)?.let { onward ->
+                val targets = _state.value.friends.map { it.endpointId }.filter { it != song.endpointId }
+                if (targets.isNotEmpty()) sendFileTo(file, onward.copy(sizeBytes = file.length()), targets)
+            }
+            val name = info.originName ?: friendName(song.endpointId)
+            playShoutOut(file, if ((info.hops ?: 0) > 0) "$name (via friends)" else name)
             return
         }
         if (!complete && song.written < READY_BYTES) return
@@ -1017,6 +1253,17 @@ class NearbyManager(
         }
     }
 
+    /** a file (shout-out, photo) to [targets], each its own stream (the file can be deleted meanwhile) */
+    private fun sendFileTo(voice: File, info: NearbyMessage, targets: List<String>) {
+        targets.forEach { endpointId ->
+            runCatching {
+                val payload = Payload.fromStream(ParcelFileDescriptor.open(voice, ParcelFileDescriptor.MODE_READ_ONLY))
+                send(endpointId, info.copy(payloadId = payload.id))
+                client.sendPayload(endpointId, payload)
+            }
+        }
+    }
+
     private fun playShoutOut(voice: File, from: String) {
         _state.update { it.copy(shoutOutFrom = from) }
         shoutOuts.play(voice) { _state.update { it.copy(shoutOutFrom = null) } }
@@ -1030,7 +1277,12 @@ class NearbyManager(
         removeTransfer(inKey(song.payloadId))
         scope.launch { received.remove(song.songId) }
         song.path?.let { File(it).delete() }
-        _state.update { it.copy(error = "\"${song.info?.title ?: "The song"}\" stopped half-way. Stay closer together and try again.") }
+        val what = when (song.info?.purpose) {
+            NearbyMessage.PURPOSE_PHOTO -> "A photo"
+            NearbyMessage.PURPOSE_SHOUTOUT -> "A shout-out"
+            else -> "\"${song.info?.title ?: "The song"}\""
+        }
+        _state.update { it.copy(error = "$what stopped half-way. Stay closer together and try again.") }
     }
 
     private fun sendFailed(payloadId: Long, error: String) {
@@ -1194,6 +1446,7 @@ class NearbyManager(
         if (userSearching) stopSearching()
         // keeps the connection (chat, walkie-talkie...) alive with the app in the background
         NearbyService.start(context)
+        startKeepAlive()
         requestLibrary(endpointId)
         sendNowPlaying(endpointId)
         startNowPlayingUpdates()
@@ -1211,6 +1464,7 @@ class NearbyManager(
             book.newSecret().also { book.remember(phoneId, friendName(endpointId), it) }
         } else null
         send(endpointId, NearbyMessage(NearbyMessage.HELLO, phoneId = book.myId, secret = secret))
+        catchUp(endpointId)
         _state.update { it.copy(rememberedPhones = book.count) }
     }
 
@@ -1219,7 +1473,8 @@ class NearbyManager(
             if (payload.type == Payload.Type.STREAM) {
                 // a friend's live voice (announced by MIC_START just before)
                 micStreams.remove(payload.id)?.let { sampleRate ->
-                    if (walkieStreams.remove(payload.id)) listenToTalker(endpointId, payload, sampleRate)
+                    val walkie = walkieStreams.remove(payload.id)
+                    if (walkie != null) listenToTalker(endpointId, payload, sampleRate, walkie)
                     else listenToSinger(endpointId, payload, sampleRate)
                     return
                 }
@@ -1265,7 +1520,11 @@ class NearbyManager(
             return
         }
         if (message.type in Mesh.RELAYED) {
-            if (!mesh.isNew(message)) return
+            if (!mesh.isNew(message)) {
+                // a message we already have, sent again: its sender missed our receipt, send it again
+                if (message.type == NearbyMessage.CHAT) acknowledge(message.origin, message.seq)
+                return
+            }
             // pass it on to the others (not back to where it came from)
             mesh.forwarded(message)?.let { copy ->
                 _state.value.friends.filter { it.endpointId != endpointId }.forEach { send(it.endpointId, copy) }
@@ -1284,7 +1543,7 @@ class NearbyManager(
             }
             NearbyMessage.MIC_START -> message.payloadId?.let {
                 micStreams[it] = message.sampleRate ?: LiveMic.SAMPLE_RATE
-                if (message.purpose == NearbyMessage.PURPOSE_WALKIE) walkieStreams += it
+                if (message.purpose == NearbyMessage.PURPOSE_WALKIE) walkieStreams[it] = message
             }
             NearbyMessage.MIC_STOP -> when (endpointId) {
                 // the singer stopped
@@ -1307,6 +1566,7 @@ class NearbyManager(
                 it.copy(djOpen = message.djOpen == true, upNext = message.queue.orEmpty())
             }
             NearbyMessage.CHAT -> receiveChat(endpointId, message)
+            NearbyMessage.CHAT_ACK -> receiveAck(endpointId, message)
             NearbyMessage.FILE_INFO -> receiveFileInfo(endpointId, message)
             NearbyMessage.SONG_ART -> message.payloadId?.let { id -> message.art?.let { incomingArt[id] = it } }
             NearbyMessage.SONG_LYRICS -> message.payloadId?.let { id ->
@@ -1447,6 +1707,32 @@ class NearbyManager(
         val bytes = gson.toJson(message).toByteArray()
         if (bytes.size > MAX_MESSAGE_BYTES) return // e.g. very long lyrics: the song goes without them
         client.sendPayload(endpointId, Payload.fromBytes(bytes))
+            .addOnFailureListener { e -> if (e.statusCode() == ConnectionsStatusCodes.STATUS_ENDPOINT_UNKNOWN) connectionBroke(endpointId) }
+    }
+
+    private var keepAliveJob: Job? = null
+
+    /** a small "still here" to every friend now and then: a dead connection is noticed within seconds */
+    private fun startKeepAlive() {
+        if (keepAliveJob?.isActive == true) return
+        keepAliveJob = scope.launch {
+            while (_state.value.friends.isNotEmpty()) {
+                delay(KEEP_ALIVE_MS)
+                _state.value.friends.forEach { send(it.endpointId, NearbyMessage(NearbyMessage.PING)) }
+                resendUnconfirmed()
+            }
+        }
+    }
+
+    /**
+     * Nearby says the friend isn't connected any more, but never told us (e.g. Wi-Fi was turned
+     * off under a connection that had moved to Wi-Fi): drop it, so reconnecting starts
+     * (over Bluetooth, if that's what's left)
+     */
+    private fun connectionBroke(endpointId: String) {
+        if (_state.value.friends.none { it.endpointId == endpointId }) return
+        runCatching { client.disconnectFromEndpoint(endpointId) }
+        removeFriend(endpointId)
     }
 
     // ---------------------- helpers ----------------------
@@ -1551,6 +1837,8 @@ class NearbyManager(
         const val RECONNECT_WINDOW_MS = 15 * 60 * 1000L
         const val RECONNECT_SCAN_MS = 20_000L
         const val RECONNECT_PAUSE_MS = 40_000L
+        /** after a drop, search nonstop this long */
+        const val FAST_RECONNECT_MS = 2 * 60 * 1000L
         /** the phone with the bigger id waits this long before asking too */
         const val RECONNECT_SECOND_ASK_MS = 6_000L
         /** a reconnected phone has this long to prove who it is */
@@ -1558,6 +1846,16 @@ class NearbyManager(
         /** the group chat keeps this many messages (this session only) */
         const val MAX_CHAT_MESSAGES = 300
         const val MAX_CHAT_CHARS = 500
+        const val KEEP_ALIVE_MS = 10_000L
+
+        /** someone reconnecting gets the chat of the last half hour (at most this many messages) */
+        const val CATCH_UP_MS = 30 * 60 * 1000L
+        const val MAX_CATCH_UP = 60
+
+        /** photo drop: long side in pixels, JPEG quality, how long photos stay on the phone */
+        const val MAX_PHOTO_PX = 1600
+        const val PHOTO_QUALITY = 82
+        const val PHOTO_KEEP_MS = 2 * 24 * 60 * 60 * 1000L
 
         /** a walkie-talkie message is at most this long */
         const val MAX_TALK_MS = 60_000L

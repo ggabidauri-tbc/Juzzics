@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import java.io.InputStream
+import java.io.OutputStream
 import kotlin.concurrent.thread
 import kotlin.math.sqrt
 
@@ -188,7 +189,11 @@ class LiveMic(context: Context) {
     @Volatile var gain = 2f
 
     /** plays the voice arriving on [voice] until it ends (or [stopListening]); then [onEnd] */
-    fun listen(voice: InputStream, sampleRate: Int, onEnd: () -> Unit) {
+    /**
+     * [forward]: the voice also goes on here, as it arrives (walkie-talkie relayed to friends
+     * further away); closed when the voice ends
+     */
+    fun listen(voice: InputStream, sampleRate: Int, forward: OutputStream? = null, onEnd: () -> Unit) {
         if (listening) replaced += listenSession
         stopListening()
         val session = ++listenSession
@@ -197,6 +202,7 @@ class LiveMic(context: Context) {
         keepAwake(true)
         thread(name = "juzzics-voice", priority = Thread.MAX_PRIORITY) {
             val track = createTrack(sampleRate)
+            var relay = forward
             try {
                 track.play()
                 val frameBytes = sampleRate * 2 * FRAME_MS / 1000
@@ -210,6 +216,8 @@ class LiveMic(context: Context) {
                     val read = voice.read(buffer)
                     if (read < 0) break
                     if (read > 0) {
+                        // passed on untouched (before the volume boost); a broken relay just stops
+                        relay?.let { out -> if (runCatching { out.write(buffer, 0, read) }.isFailure) relay = null }
                         amplify(buffer, read, gain)
                         track.write(buffer, 0, read)
                     }
@@ -220,6 +228,8 @@ class LiveMic(context: Context) {
                 runCatching { track.stop() }
                 track.release()
                 runCatching { voice.close() }
+                // the relayed voice ends too
+                runCatching { forward?.close() }
                 if (listenSession == session) listening = false
                 keepAwake(false)
                 if (!replaced.remove(session)) onEnd()

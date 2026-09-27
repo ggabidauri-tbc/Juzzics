@@ -1,6 +1,34 @@
 package com.example.juzzics.features.nearby.ui
 
 import android.location.Location
+import android.content.ContentValues
+import android.content.Context
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
+import coil.compose.AsyncImage
+import com.example.juzzics.common.messages.AppMessages
+import java.io.File
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -46,6 +74,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -93,6 +122,23 @@ fun ChatPanel(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifie
     }
     var text by rememberSaveable { mutableStateOf("") }
     var withLocation by rememberSaveable { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<ChatMessage?>(null) }
+
+    // photo drop: pick one (no permission needed) or take one with the camera app;
+    // what's typed goes with it as the caption
+    val context = LocalContext.current
+    fun sendPhoto(uri: Uri) {
+        onAction(NearbyVM.SendPhotoAction(uri, text))
+        text = ""
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let(::sendPhoto)
+    }
+    var cameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
+        cameraUri?.let { if (taken) sendPhoto(it) }
+    }
+    var photoMenu by remember { mutableStateOf(false) }
     val canSend = nearby.friends.isNotEmpty()
     fun send(message: String) {
         onAction(NearbyVM.SendChatAction(message, withLocation))
@@ -155,6 +201,7 @@ fun ChatPanel(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifie
                     ChatBubble(
                         message = message,
                         me = nearby.radar.me,
+                        onOpenPhoto = { viewing = message },
                         onShowOnMap = {
                             onAction(NearbyVM.RadarModeAction(true))
                             onAction(NearbyVM.OpenPanelAction(NearbyPanel.RADAR))
@@ -195,6 +242,35 @@ fun ChatPanel(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifie
                     tint = if (withLocation) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            Box {
+                IconButton(onClick = { photoMenu = true }, enabled = canSend) {
+                    Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Send a photo")
+                }
+                DropdownMenu(expanded = photoMenu, onDismissRequest = { photoMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Choose a photo") },
+                        leadingIcon = { Icon(Icons.Filled.PhotoLibrary, contentDescription = null) },
+                        onClick = {
+                            photoMenu = false
+                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Take a photo") },
+                        leadingIcon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
+                        onClick = {
+                            photoMenu = false
+                            runCatching {
+                                val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+                                val file = File(dir, "photo_${System.currentTimeMillis()}.jpg")
+                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+                                cameraUri = uri
+                                camera.launch(uri)
+                            }
+                        }
+                    )
+                }
+            }
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it.take(500) },
@@ -221,11 +297,20 @@ fun ChatPanel(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifie
             ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
         }
     }
+
+    viewing?.photoPath?.let { path ->
+        PhotoViewer(
+            path = path,
+            from = viewing?.from.orEmpty(),
+            caption = viewing?.text.orEmpty(),
+            onDismiss = { viewing = null }
+        )
+    }
 }
 
-/** yours on the right, theirs on the left with their name; a place chip when it has a position */
+/** yours on the right, theirs on the left with their name; a photo, a place chip when it has a position */
 @Composable
-private fun ChatBubble(message: ChatMessage, me: GeoFix?, onShowOnMap: () -> Unit) {
+private fun ChatBubble(message: ChatMessage, me: GeoFix?, onOpenPhoto: () -> Unit, onShowOnMap: () -> Unit) {
     val time = remember(message.atMs) { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(message.atMs)) }
     Box(Modifier.fillMaxWidth(), contentAlignment = if (message.fromMe) Alignment.CenterEnd else Alignment.CenterStart) {
         Column(
@@ -250,7 +335,26 @@ private fun ChatBubble(message: ChatMessage, me: GeoFix?, onShowOnMap: () -> Uni
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            Text(message.text, style = MaterialTheme.typography.bodyLarge, color = content)
+            message.photoPath?.let { path ->
+                AsyncImage(
+                    model = File(path),
+                    contentDescription = "Photo from ${message.from}",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .padding(top = if (message.fromMe) 0.dp else 4.dp)
+                        .size(width = 240.dp, height = 240.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(onClick = onOpenPhoto)
+                )
+            }
+            if (message.text.isNotBlank()) {
+                Text(
+                    message.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = content,
+                    modifier = Modifier.padding(top = if (message.photoPath != null) 6.dp else 0.dp)
+                )
+            }
             val lat = message.lat
             val lon = message.lon
             if (lat != null && lon != null) {
@@ -277,7 +381,13 @@ private fun ChatBubble(message: ChatMessage, me: GeoFix?, onShowOnMap: () -> Uni
                 }
             }
             Text(
-                time,
+                when {
+                    !message.fromMe -> time
+                    message.pending -> "$time · waiting for friends to be back"
+                    message.deliveredTo.isEmpty() -> "$time · ✓ sending"
+                    message.deliveredTo.size <= 2 -> "$time · ✓✓ ${message.deliveredTo.values.joinToString()}"
+                    else -> "$time · ✓✓ ${message.deliveredTo.size} people"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = content.copy(alpha = 0.6f),
                 modifier = Modifier
@@ -287,3 +397,72 @@ private fun ChatBubble(message: ChatMessage, me: GeoFix?, onShowOnMap: () -> Uni
         }
     }
 }
+
+/** a photo full screen, with "Save to gallery" */
+@Composable
+private fun PhotoViewer(path: String, from: String, caption: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            AsyncImage(
+                model = File(path),
+                contentDescription = "Photo from $from",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(onClick = onDismiss)
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(16.dp)
+            ) {
+                Text(from, style = MaterialTheme.typography.titleSmall, color = Color.White)
+                if (caption.isNotBlank()) {
+                    Text(caption, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
+                }
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = {
+                        AppMessages.show(
+                            if (savePhotoToGallery(context, File(path))) "Saved to Pictures/Juzzics"
+                            else "Couldn't save the photo"
+                        )
+                    }) {
+                        Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Save to gallery", modifier = Modifier.padding(start = 6.dp))
+                    }
+                    TextButton(onClick = onDismiss) { Text("Close", color = Color.White) }
+                }
+            }
+        }
+    }
+}
+
+/** copies [photo] into the phone's gallery (Pictures/Juzzics) */
+private fun savePhotoToGallery(context: Context, photo: File): Boolean = runCatching {
+    val name = "Juzzics_${System.currentTimeMillis()}.jpg"
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Juzzics")
+        }
+        val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+        context.contentResolver.openOutputStream(uri)?.use { out -> photo.inputStream().use { it.copyTo(out) } } ?: return false
+    } else {
+        // Android 9 and older: needs storage access (asked when saving songs); fails without it
+        @Suppress("DEPRECATION")
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Juzzics")
+        dir.mkdirs()
+        val target = File(dir, name)
+        photo.copyTo(target, overwrite = true)
+        MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf("image/jpeg"), null)
+    }
+    true
+}.getOrDefault(false)

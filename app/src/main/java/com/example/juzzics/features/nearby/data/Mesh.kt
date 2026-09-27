@@ -28,7 +28,7 @@ class Mesh(private val myId: () -> String, private val myName: () -> String) {
         val origin = message.origin ?: return true // an older Juzzics: just this hop
         if (origin == myId()) return false
         val seq = message.seq ?: return true
-        if (message.type == NearbyMessage.CHAT) {
+        if (message.type == NearbyMessage.CHAT || message.type == NearbyMessage.CHAT_ACK) {
             // two paths can deliver chat messages out of order: remember each one
             if (!seenChats.add("$origin/$seq")) return false
             if (seenChats.size > MAX_SEEN_CHATS) seenChats.remove(seenChats.first())
@@ -63,6 +63,7 @@ class Mesh(private val myId: () -> String, private val myName: () -> String) {
             NearbyMessage.PIN_CLEAR,
             NearbyMessage.COME_TO_ME,
             NearbyMessage.CHAT,
+            NearbyMessage.CHAT_ACK,
         )
 
         private const val MAX_SEEN_CHATS = 500

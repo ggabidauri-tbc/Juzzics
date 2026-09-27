@@ -608,8 +608,10 @@ private fun TogetherGrid(nearby: NearbyState, received: List<ReceivedSong>, onAc
                 Icons.Filled.Forum, "Group chat",
                 when {
                     nearby.unreadChat > 0 -> "${nearby.unreadChat} new"
-                    nearby.chat.isNotEmpty() -> nearby.chat.last().let { "${it.from}: ${it.text}" }
-                    else -> "Messages, no internet"
+                    nearby.chat.isNotEmpty() -> nearby.chat.last().let {
+                        "${it.from}: " + if (it.photoPath != null && it.text.isBlank()) "📷 Photo" else it.text
+                    }
+                    else -> "Messages and photos, no internet"
                 },
                 active = nearby.unreadChat > 0,
             ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.CHAT)) }
@@ -719,7 +721,7 @@ private fun PanelPage(
                 NearbyPanel.SHOUT_OUT -> "A quick voice message, played over the music"
                 NearbyPanel.RECEIVED -> "The last songs friends sent you"
                 NearbyPanel.RADAR -> "Where everyone is, even without internet (GPS)"
-                NearbyPanel.CHAT -> "Everyone connected, no internet needed"
+                NearbyPanel.CHAT -> "Messages and photos to everyone, no internet needed"
             },
             onBack = { onAction(NearbyVM.OpenPanelAction(null)) }
         )
