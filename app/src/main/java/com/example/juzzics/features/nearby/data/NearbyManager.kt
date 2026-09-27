@@ -16,6 +16,7 @@ import com.example.juzzics.features.lyrics.domain.model.lrcToPlainText
 import com.example.juzzics.features.lyrics.domain.repo.LyricsRepo
 import com.example.juzzics.features.musics.domain.model.MusicFileDomain
 import com.example.juzzics.features.musics.domain.repo.MusicRepo
+import com.example.juzzics.features.nearby.domain.BlendItem
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
 import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
@@ -94,6 +95,31 @@ class NearbyManager(
         nameOf = ::friendName,
         onState = { party -> _state.update { it.copy(party = party) } },
     )
+
+    private val carDj = NearbyCarDj(
+        player = player,
+        scope = scope,
+        broadcast = { message -> _state.value.friends.forEach { send(it.endpointId, message) } },
+        onState = { open, queue -> _state.update { it.copy(carDj = open, djQueue = queue) } },
+    )
+
+    private val blendPlayer = NearbyBlendPlayer(
+        player = player,
+        scope = scope,
+        requestSong = { endpointId, songId, key ->
+            send(endpointId, NearbyMessage(NearbyMessage.STREAM_REQUEST, songId = songId, purpose = NearbyMessage.PURPOSE_BLEND, key = key))
+        },
+        findMine = { songId -> musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).find { it.id == songId } },
+        runAsync = { block -> scope.launch { block() } },
+    )
+
+    private val shoutOuts = ShoutOuts(context)
+
+    private val liveMic = LiveMic(context)
+    /** live voice streams announced by MIC_START: payload id to sample rate */
+    private val micStreams = mutableMapOf<Long, Int>()
+    /** who's singing through this phone */
+    private var singerId: String? = null
 
     /** names of phones we're (becoming) connected to */
     private val names = mutableMapOf<String, String>()
@@ -267,6 +293,116 @@ class NearbyManager(
         send(endpointId, NearbyMessage(NearbyMessage.STREAM_REQUEST, songId = song.id))
     }
 
+    /** Car DJ: connected friends may add songs to this phone's queue */
+    fun setCarDj(on: Boolean) = carDj.setOpen(on)
+
+    /** Car DJ (their phone): adds one of their own songs to their queue */
+    fun queueOnFriend(endpointId: String, songId: Long) =
+        send(endpointId, NearbyMessage(NearbyMessage.QUEUE_ADD, songId = songId))
+
+    /** Car DJ (their phone): sends one of this phone's songs into their queue */
+    fun queueMySongOnFriend(endpointId: String, songId: Long) =
+        sendSongFile(endpointId, songId, askedByFriend = false, purpose = NearbyMessage.PURPOSE_QUEUE)
+
+    /** plays a blend from [start]: friends' songs stream in one at a time */
+    fun playBlend(mix: List<BlendItem>, start: Int) = blendPlayer.play(mix, start)
+
+    /** plays some of this phone's own songs (e.g. the ones shared with friends) */
+    fun playMine(songIds: List<Long>, start: Int, source: String) {
+        scope.launch {
+            val all = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).associateBy { it.id }
+            val songs = songIds.mapNotNull { all[it] }
+            if (songs.isNotEmpty()) player.playQueue(songs, start.coerceIn(songs.indices), source)
+        }
+    }
+
+    /** sing-along: this phone's mic plays live on [endpointId]'s phone, over its music */
+    fun startSinging(endpointId: String) {
+        stopSinging()
+        val voice = liveMic.startSinging()
+        if (voice == null) {
+            _state.update { it.copy(error = "Couldn't use the microphone") }
+            return
+        }
+        val payload = Payload.fromStream(voice)
+        send(endpointId, NearbyMessage(NearbyMessage.MIC_START, payloadId = payload.id, sampleRate = LiveMic.SAMPLE_RATE))
+        client.sendPayload(endpointId, payload)
+            .addOnFailureListener { e -> stopSinging(tellThem = false); _state.update { it.copy(error = "Couldn't reach their phone. ${e.explain()}") } }
+        _state.update { it.copy(singingTo = endpointId) }
+        // keeps the microphone working with the screen off / locked
+        SingingService.start(context, friendName(endpointId))
+    }
+
+    fun stopSinging(tellThem: Boolean = true) {
+        val to = _state.value.singingTo ?: return
+        liveMic.stopSinging()
+        SingingService.stop(context)
+        if (tellThem) send(to, NearbyMessage(NearbyMessage.MIC_STOP))
+        _state.update { it.copy(singingTo = null) }
+    }
+
+    /** on the phone playing the voice: turn the singer's mic off */
+    fun stopSinger() {
+        singerId?.let { send(it, NearbyMessage(NearbyMessage.MIC_STOP)) }
+        liveMic.stopListening()
+    }
+
+    fun setMicGain(gain: Float) {
+        liveMic.gain = gain
+        _state.update { it.copy(micGain = gain) }
+    }
+
+    private fun listenToSinger(endpointId: String, payload: Payload, sampleRate: Int) {
+        val voice = payload.asStream()?.asInputStream() ?: return
+        singerId = endpointId
+        _state.update { it.copy(singer = friendName(endpointId)) }
+        liveMic.listen(voice, sampleRate) {
+            // (on the audio thread)
+            scope.launch {
+                if (singerId == endpointId) {
+                    singerId = null
+                    _state.update { it.copy(singer = null) }
+                }
+            }
+        }
+    }
+
+    fun startShoutOut() {
+        if (_state.value.friends.isEmpty()) return
+        if (shoutOuts.startRecording()) _state.update { it.copy(recordingShoutOut = true) }
+        else _state.update { it.copy(error = "Couldn't use the microphone") }
+    }
+
+    /** [send] false: cancelled (e.g. the finger slid away) */
+    fun stopShoutOut(send: Boolean) {
+        _state.update { it.copy(recordingShoutOut = false) }
+        if (!send) {
+            shoutOuts.cancelRecording()
+            return
+        }
+        val voice = shoutOuts.stopRecording() ?: return
+        _state.value.friends.forEach { friend ->
+            runCatching {
+                val payload = Payload.fromStream(ParcelFileDescriptor.open(voice, ParcelFileDescriptor.MODE_READ_ONLY))
+                send(
+                    friend.endpointId,
+                    NearbyMessage(
+                        NearbyMessage.FILE_INFO,
+                        payloadId = payload.id,
+                        sizeBytes = voice.length(),
+                        purpose = NearbyMessage.PURPOSE_SHOUTOUT,
+                    )
+                )
+                client.sendPayload(friend.endpointId, payload)
+            }
+        }
+        // the open streams keep reading it; the file itself can go
+        scope.launch {
+            delay(60_000)
+            voice.delete()
+        }
+    }
+
     /** sends one of this phone's songs to play it on theirs */
     fun sendToFriend(endpointId: String, songId: Long) = sendSongFile(endpointId, songId, askedByFriend = false)
 
@@ -274,12 +410,21 @@ class NearbyManager(
     suspend fun mySongs(): List<RemoteSong> =
         musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).map { it.toRemote() }
 
-    /** a friend asked for one of this phone's songs, or picked one to send */
-    private fun sendSongFile(endpointId: String, songId: Long, askedByFriend: Boolean) {
+    /**
+     * a friend asked for one of this phone's songs, or picked one to send.
+     * [purpose] / [key] go back with it (e.g. a blend matches the answer to its request)
+     */
+    private fun sendSongFile(
+        endpointId: String,
+        songId: Long,
+        askedByFriend: Boolean,
+        purpose: String? = null,
+        key: Long? = null,
+    ) {
         scope.launch {
             val song = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).find { it.id == songId }
-            if (song == null || !sendSongFile(endpointId, song)) {
-                if (askedByFriend) send(endpointId, NearbyMessage(NearbyMessage.FILE_FAILED, songId = songId))
+            if (song == null || !sendSongFile(endpointId, song, purpose = purpose, key = key)) {
+                if (askedByFriend) send(endpointId, NearbyMessage(NearbyMessage.FILE_FAILED, songId = songId, purpose = purpose, key = key))
                 else _state.update { it.copy(error = "Couldn't open that song to send it") }
             }
         }
@@ -291,7 +436,13 @@ class NearbyManager(
      * [partyKey] set: it's for party mode (the guest follows the host with it).
      * false if the file couldn't be opened
      */
-    private suspend fun sendSongFile(endpointId: String, song: MusicFileDomain, partyKey: Long? = null): Boolean {
+    private suspend fun sendSongFile(
+        endpointId: String,
+        song: MusicFileDomain,
+        partyKey: Long? = null,
+        purpose: String? = partyKey?.let { NearbyMessage.PURPOSE_PARTY },
+        key: Long? = null,
+    ): Boolean {
         val file = withContext(Dispatchers.IO) {
             runCatching {
                 val path = song.data
@@ -327,8 +478,9 @@ class NearbyManager(
                 extension = path.substringAfterLast('.', "").take(5),
                 sizeBytes = size,
                 canSave = _state.value.letFriendsSave,
-                purpose = partyKey?.let { NearbyMessage.PURPOSE_PARTY },
+                purpose = purpose,
                 partyKey = partyKey,
+                key = key,
             )
         )
         art?.let { send(endpointId, NearbyMessage(NearbyMessage.SONG_ART, payloadId = payload.id, art = it)) }
@@ -368,7 +520,7 @@ class NearbyManager(
         song.path?.let { GrowingFiles.setTotalBytes(it, message.sizeBytes ?: -1L) }
         val asked = removeTransfer(requestKey(endpointId, message.songId ?: 0L))
         if (asked) requestedPayloads += payloadId
-        addTransfer(
+        if (message.purpose != NearbyMessage.PURPOSE_SHOUTOUT) addTransfer(
             SongTransfer(inKey(payloadId), endpointId, message.title.orEmpty(), friendName(endpointId), incoming = true, progress = 0f)
         )
         announceIfReady(song)
@@ -427,6 +579,13 @@ class NearbyManager(
         val info = song.info ?: return
         val path = song.path ?: return
         if (song.announced || song.failed) return
+        if (info.purpose == NearbyMessage.PURPOSE_SHOUTOUT) {
+            // a voice message: small, played once it's all here, not kept
+            if (!complete) return
+            song.announced = true
+            playShoutOut(File(path), friendName(song.endpointId))
+            return
+        }
         if (!complete && song.written < READY_BYTES) return
         song.announced = true
         val asked = requestedPayloads.remove(song.payloadId)
@@ -447,13 +606,25 @@ class NearbyManager(
             received.add(receivedSong, artBytes, lyrics)
 
             val partyKey = info.partyKey
+            val key = info.key
+            val music = received.toMusicFile(receivedSong)
             if (info.purpose == NearbyMessage.PURPOSE_PARTY && partyKey != null) {
-                party.onSongReady(partyKey, received.toMusicFile(receivedSong))
+                party.onSongReady(partyKey, music)
+            } else if (info.purpose == NearbyMessage.PURPOSE_BLEND && key != null) {
+                blendPlayer.onSongReady(key, music)
+            } else if (info.purpose == NearbyMessage.PURPOSE_QUEUE) {
+                // Car DJ turned off meanwhile: it just stays in "Songs friends sent"
+                if (carDj.open) carDj.add(music, receivedSong.from)
             } else {
                 player.playQueue(listOf(received.toMusicFile(receivedSong)), 0, source = "From ${receivedSong.from}")
                 if (asked) OpenPlayerRequests.request()
             }
         }
+    }
+
+    private fun playShoutOut(voice: File, from: String) {
+        _state.update { it.copy(shoutOutFrom = from) }
+        shoutOuts.play(voice) { _state.update { it.copy(shoutOutFrom = null) } }
     }
 
     private fun receiveFailed(song: IncomingSong) {
@@ -581,6 +752,7 @@ class NearbyManager(
                 sendNowPlaying(endpointId)
                 startNowPlayingUpdates()
                 party.onFriendConnected(endpointId)
+                if (carDj.open) send(endpointId, carDj.stateMessage())
             } else if (!iRejected) {
                 val who = names.remove(endpointId) ?: "the other phone"
                 val error = if (result.status.statusCode == ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED)
@@ -595,6 +767,11 @@ class NearbyManager(
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type == Payload.Type.STREAM) {
+                // a friend's live voice (announced by MIC_START just before)
+                micStreams.remove(payload.id)?.let { sampleRate ->
+                    listenToSinger(endpointId, payload, sampleRate)
+                    return
+                }
                 // a song starts arriving (its info comes as a separate message)
                 receiveStream(endpointId, payload)
                 return
@@ -619,7 +796,30 @@ class NearbyManager(
             NearbyMessage.PLAY -> message.songId?.let { playForFriend(endpointId, it) }
             NearbyMessage.COMMAND -> message.command?.let { runCatching { RemoteCommand.valueOf(it) }.getOrNull() }
                 ?.let(::runCommand)
-            NearbyMessage.STREAM_REQUEST -> message.songId?.let { sendSongFile(endpointId, it, askedByFriend = true) }
+            NearbyMessage.STREAM_REQUEST -> message.songId?.let {
+                sendSongFile(endpointId, it, askedByFriend = true, purpose = message.purpose, key = message.key)
+            }
+            NearbyMessage.MIC_START -> message.payloadId?.let { micStreams[it] = message.sampleRate ?: LiveMic.SAMPLE_RATE }
+            NearbyMessage.MIC_STOP -> when (endpointId) {
+                // the singer stopped
+                singerId -> liveMic.stopListening()
+                // the phone we sing through turned us off
+                _state.value.singingTo -> {
+                    stopSinging(tellThem = false)
+                    _state.update { it.copy(error = "${friendName(endpointId)} turned your mic off") }
+                }
+                else -> Unit
+            }
+            NearbyMessage.QUEUE_ADD -> message.songId?.let { songId ->
+                if (!carDj.open) return@let
+                scope.launch {
+                    musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).find { it.id == songId }
+                        ?.let { carDj.add(it, friendName(endpointId)) }
+                }
+            }
+            NearbyMessage.DJ_STATE -> updateFriend(endpointId) {
+                it.copy(djOpen = message.djOpen == true, upNext = message.queue.orEmpty())
+            }
             NearbyMessage.FILE_INFO -> receiveFileInfo(endpointId, message)
             NearbyMessage.SONG_ART -> message.payloadId?.let { id -> message.art?.let { incomingArt[id] = it } }
             NearbyMessage.SONG_LYRICS -> message.payloadId?.let { id ->
@@ -627,7 +827,9 @@ class NearbyManager(
                 val plain = message.lyrics ?: synced?.let(::lrcToPlainText)
                 if (plain != null) incomingLyrics[id] = LyricsDomain(lyrics = plain, synced = synced)
             }
-            NearbyMessage.FILE_FAILED -> message.songId?.let { songId ->
+            NearbyMessage.FILE_FAILED -> if (message.purpose == NearbyMessage.PURPOSE_BLEND && message.key != null) {
+                blendPlayer.onSongFailed(message.key)
+            } else message.songId?.let { songId ->
                 if (removeTransfer(requestKey(endpointId, songId))) {
                     _state.update { it.copy(error = "${friendName(endpointId)}'s phone couldn't send that song") }
                 }
@@ -724,6 +926,8 @@ class NearbyManager(
 
     private fun removeFriend(endpointId: String) {
         party.onFriendDisconnected(endpointId)
+        if (_state.value.singingTo == endpointId) stopSinging(tellThem = false)
+        if (singerId == endpointId) liveMic.stopListening()
         names.remove(endpointId)
         _state.update { state ->
             state.copy(

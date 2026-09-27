@@ -169,6 +169,24 @@ class PlayerController(
         else it.addMediaItem(song.toMediaItem())
     }
 
+    /**
+     * puts [songs] right after the current one, in this order (adding the ones not queued yet,
+     * moving the others). Car DJ uses it to keep friends' songs taking turns.
+     */
+    fun arrangeUpNext(songs: List<MusicFileDomain>) = withController { c ->
+        if (songs.isEmpty()) return@withController
+        if (c.mediaItemCount == 0) {
+            playQueue(songs, 0)
+            return@withController
+        }
+        val currentId = c.currentMediaItem?.mediaId
+        val upNext = songs.filter { it.mediaId != currentId }
+        upNext.forEach { knownSongs[it.mediaId] = it }
+        // take them out (from the back, so the other indices stay right), then put them in again
+        upNext.map { c.indexOf(it.mediaId) }.filter { it >= 0 }.sortedDescending().forEach(c::removeMediaItem)
+        c.addMediaItems(c.currentMediaItemIndex + 1, upNext.map { it.toMediaItem() })
+    }
+
     /** puts the queue in the order of [songIds] (after a drag in the "Up next" sheet) */
     fun reorderQueue(songIds: List<Long>) = withController {
         songIds.forEachIndexed { target, id ->

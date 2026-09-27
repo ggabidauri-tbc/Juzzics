@@ -79,6 +79,7 @@ import com.example.juzzics.features.musics.ui.components.toClock
 import com.example.juzzics.features.nearby.data.ReceivedSong
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
 import com.example.juzzics.features.nearby.domain.PartyRole
+import com.example.juzzics.features.nearby.domain.PlayTarget
 import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
 import com.example.juzzics.features.nearby.domain.PendingConnection
@@ -147,6 +148,12 @@ fun NearbyScreen(
             } else onAction(NearbyVM.SaveReceivedAction(id))
         }
 
+        // shout-outs need the microphone
+        fun micGranted() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        val shoutOutPermission = ::micGranted to { micLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+
         val nearby = NEARBY()
         val openFriend = OPEN_FRIEND()?.let { id -> nearby.friends.find { it.endpointId == id } }
 
@@ -168,9 +175,18 @@ fun NearbyScreen(
                     }
                 }
 
+                SHOW_BLEND() -> BlendPage(
+                    blend = BLEND(),
+                    onBack = { onAction(NearbyVM.OpenBlendAction(false)) },
+                    onPlayMix = { onAction(NearbyVM.PlayBlendAction(it)) },
+                    onReshuffle = { onAction(NearbyVM.ReshuffleBlendAction) },
+                    onPlayShared = { onAction(NearbyVM.PlaySharedAction(it)) },
+                )
+
                 openFriend != null && SEND_MODE() -> SendSongsPage(
                     friend = openFriend,
                     mySongs = MY_SONGS(),
+                    toQueue = SEND_TO_QUEUE(),
                     query = !FRIEND_QUERY,
                     transfers = nearby.transfers,
                     onAction = onAction,
@@ -179,12 +195,18 @@ fun NearbyScreen(
                 openFriend != null -> FriendLibrary(
                     friend = openFriend,
                     query = !FRIEND_QUERY,
-                    listenHere = LISTEN_HERE(),
+                    target = PLAY_TARGET(),
                     transfers = nearby.transfers,
                     onAction = onAction,
                 )
 
-                else -> NearbyHome(nearby = nearby, received = RECEIVED(), onSave = saveReceived, onAction = onAction)
+                else -> NearbyHome(
+                    nearby = nearby,
+                    received = RECEIVED(),
+                    onSave = saveReceived,
+                    micPermission = shoutOutPermission,
+                    onAction = onAction,
+                )
             }
         }
 
@@ -212,6 +234,8 @@ private fun NearbyHome(
     nearby: NearbyState,
     received: List<ReceivedSong>,
     onSave: (Long) -> Unit,
+    /** has it / ask for it */
+    micPermission: Pair<() -> Boolean, () -> Unit>,
     onAction: (Action) -> Unit,
 ) {
     LazyColumn(
@@ -227,9 +251,53 @@ private fun NearbyHome(
             )
         }
         item { ShareCard(nearby, onAction) }
+        item { ShareAppCard(onMessage = { onAction(NearbyVM.ShowMessageAction(it)) }) }
 
         if (nearby.transfers.isNotEmpty()) {
             item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(vertical = 8.dp)) { Transfers(nearby.transfers) } } }
+        }
+
+        if (nearby.friends.isNotEmpty()) {
+            item {
+                ShoutOutCard(
+                    recording = nearby.recordingShoutOut,
+                    playingFrom = nearby.shoutOutFrom,
+                    hasPermission = micPermission.first,
+                    askPermission = micPermission.second,
+                    onStart = { onAction(NearbyVM.StartShoutOutAction) },
+                    onStop = { send -> onAction(NearbyVM.StopShoutOutAction(send)) },
+                )
+            }
+        }
+
+        if (nearby.friends.isNotEmpty() || nearby.singer != null) {
+            item {
+                SingCard(
+                    friends = nearby.friends.map { it.endpointId to it.name },
+                    singingTo = nearby.singingTo,
+                    singer = nearby.singer,
+                    micGain = nearby.micGain,
+                    hasPermission = micPermission.first,
+                    askPermission = micPermission.second,
+                    onStart = { onAction(NearbyVM.StartSingingAction(it)) },
+                    onStop = { onAction(NearbyVM.StopSingingAction) },
+                    onStopSinger = { onAction(NearbyVM.StopSingerAction) },
+                    onGain = { onAction(NearbyVM.MicGainAction(it)) },
+                )
+            }
+        }
+
+        if (nearby.friends.isNotEmpty() || nearby.carDj) {
+            item { CarDjCard(on = nearby.carDj, queue = nearby.djQueue, onToggle = { onAction(NearbyVM.SetCarDjAction(it)) }) }
+        }
+
+        if (nearby.friends.any { it.library.isNotEmpty() }) {
+            item {
+                BlendCard(
+                    friendNames = nearby.friends.map { it.name },
+                    onOpen = { onAction(NearbyVM.OpenBlendAction(true)) },
+                )
+            }
         }
 
         if (nearby.friends.isNotEmpty() || nearby.party.role != PartyRole.NONE) {
@@ -396,6 +464,14 @@ private fun FriendCard(friend: ConnectedFriend, onAction: (Action) -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
             RemoteControls(friend, onAction)
+            if (friend.djOpen) {
+                Text(
+                    "Car DJ: add songs to their queue",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                UpNext(friend.upNext, emptyText = "Their queue is empty", max = 4)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { onAction(NearbyVM.OpenFriendAction(friend.endpointId)) },
@@ -408,11 +484,15 @@ private fun FriendCard(friend: ConnectedFriend, onAction: (Action) -> Unit) {
                     )
                 }
                 OutlinedButton(
-                    onClick = { onAction(NearbyVM.OpenSendAction(friend.endpointId)) },
+                    onClick = { onAction(NearbyVM.OpenSendAction(friend.endpointId, toQueue = friend.djOpen)) },
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, Modifier.size(18.dp))
-                    Text("Send my song", maxLines = 1, modifier = Modifier.padding(start = 6.dp))
+                    Text(
+                        if (friend.djOpen) "Queue my songs" else "Send my song",
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
                 }
             }
         }
@@ -455,17 +535,22 @@ private fun RemoteControls(friend: ConnectedFriend, onAction: (Action) -> Unit) 
 private fun FriendLibrary(
     friend: ConnectedFriend,
     query: String,
-    listenHere: Boolean,
+    target: PlayTarget,
     transfers: List<SongTransfer>,
     onAction: (Action) -> Unit,
 ) {
     BackHandler { onAction(NearbyVM.OpenFriendAction(null)) }
+    // "their queue" only while their phone is the Car DJ
+    val playOn = if (target == PlayTarget.THEIR_QUEUE && !friend.djOpen) PlayTarget.THEIR_PHONE else target
     val songs = remember(friend.library, query) { friend.library.matching(query) }
     Column(Modifier.fillMaxSize()) {
         PageHeader(
             title = "${friend.name}'s songs",
-            subtitle = if (listenHere) "Tap a song to hear it on your phone (it's sent over first)"
-            else "Tap a song to play it on their phone",
+            subtitle = when (playOn) {
+                PlayTarget.THEIR_PHONE -> "Tap a song to play it on their phone now"
+                PlayTarget.THEIR_QUEUE -> "Tap a song to add it to their queue"
+                PlayTarget.MY_PHONE -> "Tap a song to hear it on your phone (it streams over)"
+            },
             onBack = { onAction(NearbyVM.OpenFriendAction(null)) }
         )
         Row(
@@ -475,20 +560,27 @@ private fun FriendLibrary(
         ) {
             Text("Play on", style = MaterialTheme.typography.labelLarge)
             FilterChip(
-                selected = !listenHere,
-                onClick = { onAction(NearbyVM.ListenHereModeAction(false)) },
+                selected = playOn == PlayTarget.THEIR_PHONE,
+                onClick = { onAction(NearbyVM.PlayTargetAction(PlayTarget.THEIR_PHONE)) },
                 label = { Text("Their phone") },
                 leadingIcon = { Icon(Icons.Filled.Speaker, contentDescription = null, Modifier.size(18.dp)) }
             )
+            if (friend.djOpen) {
+                FilterChip(
+                    selected = playOn == PlayTarget.THEIR_QUEUE,
+                    onClick = { onAction(NearbyVM.PlayTargetAction(PlayTarget.THEIR_QUEUE)) },
+                    label = { Text("Their queue") },
+                )
+            }
             FilterChip(
-                selected = listenHere,
-                onClick = { onAction(NearbyVM.ListenHereModeAction(true)) },
+                selected = playOn == PlayTarget.MY_PHONE,
+                onClick = { onAction(NearbyVM.PlayTargetAction(PlayTarget.MY_PHONE)) },
                 label = { Text("My phone") },
                 leadingIcon = { Icon(Icons.Filled.Headphones, contentDescription = null, Modifier.size(18.dp)) }
             )
         }
         SearchField(query, "Search their songs", onAction)
-        if (!listenHere) RemoteControls(friend, onAction)
+        if (playOn != PlayTarget.MY_PHONE) RemoteControls(friend, onAction)
         Transfers(transfers)
         if (songs.isEmpty()) {
             EmptyState(
@@ -498,12 +590,15 @@ private fun FriendLibrary(
         } else {
             SongList(
                 songs = songs,
-                isHighlighted = { !listenHere && friend.nowPlaying?.title == it.title },
+                isHighlighted = { playOn != PlayTarget.MY_PHONE && friend.nowPlaying?.title == it.title },
                 modifier = Modifier.weight(1f),
                 onClick = { song ->
                     onAction(
-                        if (listenHere) NearbyVM.ListenHereAction(friend.endpointId, song)
-                        else NearbyVM.PlayOnFriendAction(friend.endpointId, song.id)
+                        when (playOn) {
+                            PlayTarget.THEIR_PHONE -> NearbyVM.PlayOnFriendAction(friend.endpointId, song.id)
+                            PlayTarget.THEIR_QUEUE -> NearbyVM.QueueOnFriendAction(friend.endpointId, song.id)
+                            PlayTarget.MY_PHONE -> NearbyVM.ListenHereAction(friend.endpointId, song)
+                        }
                     )
                 }
             )
@@ -516,6 +611,7 @@ private fun FriendLibrary(
 private fun SendSongsPage(
     friend: ConnectedFriend,
     mySongs: List<RemoteSong>?,
+    toQueue: Boolean,
     query: String,
     transfers: List<SongTransfer>,
     onAction: (Action) -> Unit,
@@ -524,8 +620,9 @@ private fun SendSongsPage(
     val songs = remember(mySongs, query) { mySongs.orEmpty().matching(query) }
     Column(Modifier.fillMaxSize()) {
         PageHeader(
-            title = "Send to ${friend.name}",
-            subtitle = "Tap one of your songs to play it on their phone",
+            title = if (toQueue) "Add to ${friend.name}'s queue" else "Send to ${friend.name}",
+            subtitle = if (toQueue) "Tap your songs to queue them on their phone (they take turns with others')"
+            else "Tap one of your songs to play it on their phone",
             onBack = { onAction(NearbyVM.OpenFriendAction(null)) }
         )
         SearchField(query, "Search your songs", onAction)

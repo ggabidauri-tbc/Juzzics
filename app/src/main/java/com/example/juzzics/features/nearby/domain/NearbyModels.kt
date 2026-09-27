@@ -36,7 +36,14 @@ data class ConnectedFriend(
     val library: List<RemoteSong> = emptyList(),
     val libraryComplete: Boolean = false,
     val nowPlaying: RemoteNowPlaying? = null,
+    /** their phone is the Car DJ: songs can be added to its queue */
+    val djOpen: Boolean = false,
+    /** their "Up next" (when [djOpen]) */
+    val upNext: List<QueueEntry> = emptyList(),
 )
+
+/** A song in a Car DJ queue, and who added it (blank: the phone's owner). */
+data class QueueEntry(val title: String, val artist: String, val addedBy: String)
 
 /** Everything the Nearby screen shows. */
 data class NearbyState(
@@ -53,6 +60,20 @@ data class NearbyState(
     /** friends may save songs this phone sends them */
     val letFriendsSave: Boolean = true,
     val party: PartyState = PartyState(),
+    /** Car DJ: this phone lets connected friends add songs to its queue */
+    val carDj: Boolean = false,
+    /** this phone's "Up next" while it's the Car DJ */
+    val djQueue: List<QueueEntry> = emptyList(),
+    /** holding the shout-out button */
+    val recordingShoutOut: Boolean = false,
+    /** a friend's shout-out playing right now: their name */
+    val shoutOutFrom: String? = null,
+    /** this phone's mic streams live to this friend's phone (endpoint id) */
+    val singingTo: String? = null,
+    /** a friend singing through this phone right now: their name */
+    val singer: String? = null,
+    /** how loud a singing friend's voice plays here (1 = as recorded) */
+    val micGain: Float = 2f,
     val error: String? = null,
 )
 
@@ -83,3 +104,52 @@ data class PartyState(
 
 /** Remote-control commands sent to a friend's phone. */
 enum class RemoteCommand { TOGGLE, NEXT, PREVIOUS, VOLUME_UP, VOLUME_DOWN }
+
+/** A song in a blend: whose it is ([ownerId] null = this phone's). */
+data class BlendItem(val ownerId: String?, val ownerName: String, val song: RemoteSong)
+
+/** One of this phone's songs that friends have too. */
+data class SharedSong(val song: RemoteSong, val alsoWith: List<String>)
+
+/** Your music mixed with your friends': [mix] takes turns between everyone, [shared] = what you have in common. */
+data class Blend(
+    val people: List<String>,
+    val mix: List<BlendItem>,
+    val shared: List<SharedSong>,
+    /** how your taste compares with each friend's */
+    val matches: List<TasteMatch> = emptyList(),
+)
+
+/**
+ * "You and Anna: 67% match". [percent] mixes shared songs and shared artists (relative to
+ * the smaller library, so a small library can still be a twin of a big one).
+ */
+data class TasteMatch(
+    val friendName: String,
+    val percent: Int,
+    val sharedSongs: Int,
+    /** artists you both have, most songs first */
+    val sharedArtists: List<String>,
+    /** your most-collected artist they don't have, and theirs you don't */
+    val youBring: String?,
+    val theyBring: String?,
+) {
+    val label: String
+        get() = when {
+            percent >= 80 -> "Music twins"
+            percent >= 60 -> "Great match"
+            percent >= 40 -> "Good match"
+            percent >= 20 -> "Some common ground"
+            else -> "Opposites attract"
+        }
+}
+
+/** Where a song picked from a friend's list plays. */
+enum class PlayTarget {
+    /** on their phone, right now */
+    THEIR_PHONE,
+    /** added to their queue (their phone is the Car DJ) */
+    THEIR_QUEUE,
+    /** sent over and played on this phone */
+    MY_PHONE,
+}

@@ -1,5 +1,6 @@
 package com.example.juzzics.features.nearby.data
 
+import com.example.juzzics.features.nearby.domain.QueueEntry
 import com.example.juzzics.features.nearby.domain.RemoteSong
 
 /**
@@ -44,6 +45,13 @@ data class NearbyMessage(
     val hostTime: Long? = null,
     /** PARTY_PING / PARTY_PONG: the guest's clock when it asked */
     val guestTime: Long? = null,
+    /** STREAM_REQUEST / FILE_INFO / FILE_FAILED: what the asker uses to match the answer (blend) */
+    val key: Long? = null,
+    /** DJ_STATE: songs can be added to the sender's queue, and what's in it */
+    val djOpen: Boolean? = null,
+    val queue: List<QueueEntry>? = null,
+    /** MIC_START: the live voice's sample rate */
+    val sampleRate: Int? = null,
 ) {
     companion object {
         /** "send me your songs" */
@@ -54,7 +62,7 @@ data class NearbyMessage(
         const val PLAY = "play"
         const val COMMAND = "command"
         const val NOW_PLAYING = "now_playing"
-        /** "send me this song, I want to hear it on my phone" */
+        /** "send me this song, I want to hear it on my phone" ([purpose] / [key] come back in FILE_INFO) */
         const val STREAM_REQUEST = "stream_request"
         /** "the file coming next is this song, play it" */
         const val FILE_INFO = "file_info"
@@ -78,5 +86,21 @@ data class NearbyMessage(
         const val PARTY_PONG = "party_pong"
 
         const val PURPOSE_PARTY = "party"
+        /** a song for the Car DJ's queue */
+        const val PURPOSE_QUEUE = "queue"
+        /** a song of a blend (the asker plays it in the mix) */
+        const val PURPOSE_BLEND = "blend"
+        /** a voice message, played over the music */
+        const val PURPOSE_SHOUTOUT = "shoutout"
+
+        /** sing-along: "the stream [payloadId] coming now is my live voice, play it over your music" */
+        const val MIC_START = "mic_start"
+        /** sing-along: singer "I stopped" / listener "I turned your mic off" */
+        const val MIC_STOP = "mic_stop"
+
+        /** Car DJ: "you can (not) add songs to my queue, here's what's in it" */
+        const val DJ_STATE = "dj_state"
+        /** Car DJ: "add this song of yours ([songId]) to your queue" */
+        const val QUEUE_ADD = "queue_add"
     }
 }

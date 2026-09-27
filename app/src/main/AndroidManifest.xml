@@ -11,6 +11,11 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Nearby shout-outs and sing-along: the microphone -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- sing-along keeps working with the screen off (microphone service, Wi-Fi / CPU kept awake) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- trip prep checks for internet before looking up lyrics -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -92,6 +97,21 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+        <!-- sing-along: the microphone stays on while the phone is locked -->
+        <service
+            android:name=".features.nearby.data.SingingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+            <!-- sharing Juzzics itself with friends (share sheet: Quick Share, Bluetooth...) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_files" />
+        </provider>
     </application>
 
 </manifest>
