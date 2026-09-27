@@ -1,34 +1,53 @@
 package com.example.juzzics.features.musics.ui.components
 
 import androidx.compose.ui.unit.dp
+import androidx.constraintlayout.compose.ConstraintSet
+import androidx.constraintlayout.compose.ConstraintSetScope
 import androidx.constraintlayout.compose.Dimension
-import androidx.constraintlayout.compose.ExperimentalMotionApi
-import androidx.constraintlayout.compose.MotionScene
 import com.example.juzzics.features.musics.ui.vm.MusicVM
 
-@OptIn(ExperimentalMotionApi::class)
-val motionScene = MotionScene {
-    val musicList = createRefFor("music_list")
-    val box = createRefFor("box")
-    val nowPlaying = createRefFor("now_playing")
-    val musicName = createRefFor("music_name")
-    val icon = createRefFor("icon")
-    val musicProgress = createRefFor("music_progress")
-    val btPrev = createRefFor("bt_prev")
-    val btNext = createRefFor("bt_next")
-    val playOrStop = createRefFor("play_or_stop")
-    val lyrics = createRefFor("lyrics")
-    val downArrow = createRefFor("arrow_down")
-    val goSearchLyrics = createRefFor("go_search_lyrics")
-    val searchLyricsScreen = createRefFor("search_lyrics_screen")
-    val tieLyrics = createRefFor("tie_lyrics")
-    val editLyrics = createRefFor("edit_lyrics")
+/** Scene names in the order the screen moves through them (swipe up = next). */
+val musicSceneOrder = listOf(
+    MusicVM.MotionScenes.FIRST,
+    MusicVM.MotionScenes.SECOND,
+    MusicVM.MotionScenes.THIRD,
+    MusicVM.MotionScenes.FOURTH,
+    MusicVM.MotionScenes.FIFTH,
+)
+
+/** height of the full player's slider + times */
+private val PROGRESS_HEIGHT = 64.dp
+
+/** layoutIds used by the Musics screen. */
+private class MusicRefs(scope: ConstraintSetScope) {
+    val musicList = scope.createRefFor("music_list")
+    val box = scope.createRefFor("box")
+    val nowPlaying = scope.createRefFor("now_playing")
+    val musicName = scope.createRefFor("music_name")
+    val icon = scope.createRefFor("icon")
+    val musicProgress = scope.createRefFor("music_progress")
+    val btPrev = scope.createRefFor("bt_prev")
+    val btNext = scope.createRefFor("bt_next")
+    val playOrStop = scope.createRefFor("play_or_stop")
+    val lyrics = scope.createRefFor("lyrics")
+    val downArrow = scope.createRefFor("arrow_down")
+    val goSearchLyrics = scope.createRefFor("go_search_lyrics")
+    val searchLyricsScreen = scope.createRefFor("search_lyrics_screen")
+    val tieLyrics = scope.createRefFor("tie_lyrics")
+    val editLyrics = scope.createRefFor("edit_lyrics")
+    val extraControls = scope.createRefFor("extra_controls")
     val allViews = listOf(
         musicList, box, nowPlaying, musicName, icon, musicProgress, btPrev, btNext, playOrStop,
-        lyrics, downArrow, goSearchLyrics, searchLyricsScreen, tieLyrics, editLyrics
+        lyrics, downArrow, goSearchLyrics, searchLyricsScreen, tieLyrics, editLyrics, extraControls
     )
+}
 
-    val firstSet = constraintSet(MusicVM.MotionScenes.FIRST) {
+/** A scene with the Musics screen's layoutIds in scope. */
+private fun musicScene(content: MusicRefs.(ConstraintSetScope) -> Unit) =
+    ConstraintSet { MusicRefs(this).content(this) }
+
+private val firstScene = musicScene { scope ->
+    with(scope) {
         allViews.except(musicList, nowPlaying, downArrow, searchLyricsScreen).forEach {
             constrain(it) {
                 top.linkTo(parent.bottom)
@@ -54,8 +73,11 @@ val motionScene = MotionScene {
             start.linkTo(parent.end, 16.dp)
             bottom.linkTo(downArrow.top, 16.dp)
         }
+        constrain(musicProgress) { height = Dimension.value(PROGRESS_HEIGHT) }
     }
-    val secondSet = constraintSet(MusicVM.MotionScenes.SECOND) {
+}
+private val secondScene = musicScene { scope ->
+    with(scope) {
         constrain(musicList) {
             start.linkTo(parent.start, 16.dp)
             end.linkTo(parent.end, 16.dp)
@@ -107,12 +129,17 @@ val motionScene = MotionScene {
             top.linkTo(box.top, 16.dp)
             bottom.linkTo(parent.bottom, 16.dp)
         }
+        // thin progress line along the top of the mini player
         constrain(musicProgress) {
-            height = Dimension.wrapContent
+            height = Dimension.value(3.dp)
             width = Dimension.fillToConstraints
-            start.linkTo(icon.end, 16.dp)
-            end.linkTo(playOrStop.start, 16.dp)
-            bottom.linkTo(box.bottom, 16.dp)
+            start.linkTo(parent.start)
+            end.linkTo(parent.end)
+            top.linkTo(box.top)
+        }
+        constrain(extraControls) {
+            top.linkTo(parent.bottom)
+            centerHorizontallyTo(parent)
         }
         constrain(lyrics) {
             top.linkTo(parent.bottom)
@@ -139,8 +166,10 @@ val motionScene = MotionScene {
             bottom.linkTo(downArrow.top, 16.dp)
         }
     }
+}
 
-    constraintSet(MusicVM.MotionScenes.THIRD) {
+private val thirdScene = musicScene { scope ->
+    with(scope) {
         constrain(musicList) {
             start.linkTo(parent.start, 16.dp)
             end.linkTo(parent.end, 16.dp)
@@ -160,7 +189,11 @@ val motionScene = MotionScene {
         constrain(playOrStop) {
             start.linkTo(parent.start)
             end.linkTo(parent.end)
-            bottom.linkTo(parent.bottom, 100.dp)
+            bottom.linkTo(parent.bottom, 150.dp)
+        }
+        constrain(extraControls) {
+            top.linkTo(playOrStop.bottom, 12.dp)
+            centerHorizontallyTo(parent)
         }
         constrain(musicName) {
             height = Dimension.wrapContent
@@ -175,7 +208,7 @@ val motionScene = MotionScene {
             top.linkTo(parent.top, 100.dp)
             start.linkTo(parent.start)
             end.linkTo(parent.end)
-            bottom.linkTo(musicName.top)
+            bottom.linkTo(musicProgress.top, 8.dp) // artwork above the slider
         }
         constrain(btPrev) {
             end.linkTo(playOrStop.start, 32.dp)
@@ -189,8 +222,8 @@ val motionScene = MotionScene {
         }
         constrain(musicProgress) {
             width = Dimension.fillToConstraints
-            height = Dimension.value(10.dp)
-            bottom.linkTo(musicName.top, 32.dp)
+            height = Dimension.value(PROGRESS_HEIGHT) // slider + times
+            bottom.linkTo(musicName.top, 16.dp)
             start.linkTo(parent.start, 32.dp)
             end.linkTo(parent.end, 32.dp)
         }
@@ -220,7 +253,9 @@ val motionScene = MotionScene {
             bottom.linkTo(downArrow.top, 16.dp)
         }
     }
-    constraintSet(MusicVM.MotionScenes.FOURTH) {
+}
+private val fourthScene = musicScene { scope ->
+    with(scope) {
         allViews.except(lyrics, downArrow, searchLyricsScreen, tieLyrics, editLyrics).forEach {
             constrain(it) {
                 bottom.linkTo(parent.top)
@@ -235,10 +270,14 @@ val motionScene = MotionScene {
             end.linkTo(parent.end, 16.dp)
             bottom.linkTo(parent.bottom, 16.dp)
         }
+        // lyrics (synced or plain) fill the space between the title and the bottom arrow
         constrain(goSearchLyrics) {
-            top.linkTo(lyrics.bottom, 16.dp)
-            bottom.linkTo(parent.bottom, 16.dp)
-            centerHorizontallyTo(parent)
+            width = Dimension.fillToConstraints
+            height = Dimension.fillToConstraints
+            top.linkTo(lyrics.bottom, 8.dp)
+            bottom.linkTo(downArrow.top, 8.dp)
+            start.linkTo(parent.start)
+            end.linkTo(parent.end)
         }
         constrain(searchLyricsScreen) {
             top.linkTo(parent.top, 50.dp)
@@ -253,8 +292,11 @@ val motionScene = MotionScene {
             start.linkTo(downArrow.start)
             bottom.linkTo(downArrow.top, 16.dp)
         }
+        constrain(musicProgress) { height = Dimension.value(PROGRESS_HEIGHT) }
     }
-    constraintSet(MusicVM.MotionScenes.FIFTH) {
+}
+private val fifthScene = musicScene { scope ->
+    with(scope) {
         allViews.except(
             lyrics, downArrow, goSearchLyrics, searchLyricsScreen, musicName, tieLyrics, editLyrics
         ).forEach {
@@ -282,9 +324,12 @@ val motionScene = MotionScene {
             end.linkTo(parent.start, 16.dp)
         }
         constrain(searchLyricsScreen) {
-            top.linkTo(musicName.bottom, 50.dp)
-            bottom.linkTo(tieLyrics.top, 16.dp)
-            centerHorizontallyTo(parent)
+            width = Dimension.fillToConstraints
+            height = Dimension.fillToConstraints
+            top.linkTo(musicName.bottom, 24.dp)
+            bottom.linkTo(tieLyrics.top, 8.dp)
+            start.linkTo(parent.start)
+            end.linkTo(parent.end)
         }
         constrain(tieLyrics) {
             bottom.linkTo(parent.bottom, 16.dp)
@@ -294,8 +339,12 @@ val motionScene = MotionScene {
             start.linkTo(parent.end, 16.dp)
             bottom.linkTo(downArrow.top, 16.dp)
         }
+        constrain(musicProgress) { height = Dimension.value(PROGRESS_HEIGHT) }
     }
-    defaultTransition(firstSet, secondSet)
 }
+
+/** Scenes in [musicSceneOrder] order. */
+val musicScenes: List<ConstraintSet> =
+    listOf(firstScene, secondScene, thirdScene, fourthScene, fifthScene)
 
 fun <T> List<T>.except(vararg values: T): List<T> = filterNot { it in values.toSet() }

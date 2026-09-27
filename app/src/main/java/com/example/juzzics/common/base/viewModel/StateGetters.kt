@@ -2,79 +2,31 @@ package com.example.juzzics.common.base.viewModel
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.remember
-import com.example.juzzics.common.base.extensions.takeAs
 
-typealias BaseState = Map<String, MutableState<State<Any>>>
+/** All states of a ViewModel, by key. Passed from the ViewModel to its Screen. */
+typealias BaseState = Map<StateKey<*>, MutableState<*>>
+
+/** reads a state's value (outside of a [BaseState] context) */
+@Suppress("UNCHECKED_CAST")
+fun <T> BaseState.valueOf(key: StateKey<T>): T =
+    (this[key] ?: error("State '$key' isn't registered in this ViewModel")).value as T
 
 
-// ---------------------- Generic Type Composable State Getters  ----------------------
+// ---------------------- Composable State Getters (in context of BaseState) ----------------------
 
-/** gets state by stateKey in Composable functions */
+/** `KEY()` - reads the state; the Composable recomposes when it changes */
+context(baseState: BaseState)
 @Composable
-fun <T> BaseState.getState(stateKey: String) =
-    remember { this[stateKey] }?.takeAs<T>()
+operator fun <T> StateKey<T>.invoke(): T = baseState.valueOf(this)
 
-/** gets state by stateKey in Composable functions if in context of [BaseState]*/
-context (baseState: BaseState)
+/** `!STRING_KEY` - reads a String state */
+context(baseState: BaseState)
 @Composable
-fun <T> String.state(): T? = remember { baseState[this@state] }?.takeAs<T>()
-
-/** gets state by calling invoke() operator on a stateKey in Composable functions if in context of [BaseState]*/
-context (baseState: BaseState)
-@Composable
-operator fun <T> String.invoke(): T? = remember { baseState[this@invoke] }?.takeAs<T>()
+operator fun StateKey<String>.not(): String = baseState.valueOf(this)
 
 
-// ---------------------- String Type State Getters  ----------------------
+// ---------------------- Non-Composable State Getter (in context of BaseState) ----------------------
 
-/** gets state by calling on a stateKey in Composable functions if in context of [BaseState]
- * @return value or Blank string if value is null
- *
- * @exception DOES_NOT use with invoke() or any state getter*/
-context (baseState: BaseState)
-@Composable
-fun String.stateOrBlank(): String =
-    remember { baseState[this@stateOrBlank] }?.takeAs<String>() ?: ""
-
-/** gets State<String> by calling [!] or - not() operator on a stateKey in Composable functions if in context of [BaseState]
- * @return value or Blank string if value is null
- *
- * @sample !STATE_KEY_STRING
- * @exception DOES_NOT use with invoke() or any state getter*/
-context (baseState: BaseState)
-@Composable
-operator fun String.not(): String = remember { baseState[this@not] }?.takeAs<String>() ?: ""
-
-
-// ---------------------- Long Type State Getters  ----------------------
-
-/** gets state by calling on a stateKey in Composable functions if in context of [BaseState]
- * @return value or 0L if value is null
- * @exception DOES_NOT use with invoke() or any state getter*/
-context (baseState: BaseState)
-@Composable
-fun String.stateOrZero(): Long = remember { baseState[this@stateOrZero] }?.takeAs<Long>() ?: 0L
-
-
-// ---------------------- Boolean Type State Getters  ----------------------
-
-/** gets state by calling on a stateKey in Composable functions if in context of [BaseState]
- * @return value or false if value is null
- * @exception DOES_NOT use with invoke() or any state getter*/
-context (baseState: BaseState)
-@Composable
-fun String.stateOrFalse(): Boolean =
-    remember { baseState[this@stateOrFalse] }?.takeAs<Boolean>() ?: false
-
-
-
-// ---------------------- Generic Type NonComposable State Getters  ----------------------
-
-/** gets state by stateKey in normal functions*/
-fun <T> BaseState.getStateValue(stateKey: String) =
-    this[stateKey]?.takeAs<T>()
-
-/** gets state by stateKey in normal functions if in context of [BaseState]*/
-context (baseState: BaseState)
-fun <T> String.stateValue() = baseState[this@stateValue]?.takeAs<T>()
+/** reads the state in normal functions/lambdas (e.g. click handlers) */
+context(baseState: BaseState)
+fun <T> StateKey<T>.stateValue(): T = baseState.valueOf(this)

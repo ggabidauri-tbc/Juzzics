@@ -9,5 +9,7 @@ data class MusicFileDomain(
     val data: String?,
     val duration: Long,
     val icon: Uri,
-    val isPlaying: Boolean = false
+    val isPlaying: Boolean = false,
+    /** when the file was added to the device, seconds since epoch (0 if unknown) */
+    val dateAdded: Long = 0,
 )

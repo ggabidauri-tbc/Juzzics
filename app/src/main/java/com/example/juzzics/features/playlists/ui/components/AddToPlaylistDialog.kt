@@ -31,7 +31,7 @@ import com.example.juzzics.features.playlists.domain.model.PlaylistDomain
 fun AddToPlaylistDialog(
     song: MusicFileDomain,
     playlists: List<PlaylistDomain>,
-    onAddToPlaylist: (playlistId: String) -> Unit,
+    onAddToPlaylist: (playlistId: Long) -> Unit,
     onCreateAndAdd: (name: String?) -> Unit,
     onDismiss: () -> Unit
 ) {

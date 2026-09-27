@@ -4,68 +4,50 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.juzzics.common.base.extensions.isNotNull
-import com.example.juzzics.common.base.extensions.postChange
-import com.example.juzzics.common.base.extensions.takeAs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 
-/** every responseModel Type that a serviceCall returns and/or is used in the current ViewModel,
- *  this [BaseViewModel] class takes it as a parameter a map of empty ViewStates for each model.
+/**
+ * Base for all ViewModels. Pass every [StateKey] the ViewModel uses; each one gets a Compose
+ * state that starts at the key's default.
  *
- *  then it creates mutableStates for each viewState from the map.
- *  @see BaseViewModel.stateList
+ * Inside the ViewModel (and its `logics/` extension functions):
+ *  - read:  `IS_PLAYING()`, `!ARTIST` (String keys)
+ *  - write: `IS_PLAYING(true)`, `value saveIn KEY`
+ *  - load:  `launch { call(useCase(), KEY) }` (handles loading + error events)
+ *  - flows: `flow.collectIn(KEY)`
  *
- *  also has helper functions to make requestCall and it handles to save received data in the
- *  corresponding state and also emit actions of loading and showingMessage(or error).
+ * In Composables, in context of [BaseState] (see `with2(states, SomeVM)`):
+ *  - `KEY()`, `!STRING_KEY`, `KEY.stateValue()` (non-Composable read)
  *
- *  use [launch] in combination with [call] like this :
- *  launch { call(someRepository.getFirstTestData(), TEST) }
- *  ------
- *  to get State manually use invoke() operator on a StateKeyString without passing a parameter
- *  to set State manually do the same but this time pass a value as a parameter
- *
- *  also you can use for getters: [state],[typeOf]
- *  or for setters: [setValue], [saveIn] [saveInStateOf]
- *  ------
- *  to get state outside a ViewModel use same invoke operator on a StateKeyString [com.example.juzzics.common.base.viewModel.invoke]
- *  but only if you are in Context of [BaseState]
- *
- *  see other getters by remembering value in Composable, or outside a Composable context here: [BaseState]
- *  ------
- *  also you can emit [UiEvent]s to the Screens and collect them with [listen]
- *  -----
- *  use [Action] to send an Actions From Screen to the ViewModel
- *  use [UiEvent] to send an UiEvents from ViewModel to the Screen
- * */
-abstract class BaseViewModel(
-    val states: Map<String, Any>
-) : ViewModel() {
-    val uiEvent = MutableSharedFlow<UiEvent>()
+ * [Action]s go from Screen to ViewModel, [UiEvent]s from ViewModel to Screen.
+ * Every ViewModel also has the [LOADING] state: true while any `launch(emitLoadingAction = true)` runs.
+ */
+abstract class BaseViewModel(keys: List<StateKey<*>>) : ViewModel() {
+    /** buffered, so events sent while the screen isn't collecting (yet) aren't lost */
+    private val events = Channel<UiEvent>(Channel.BUFFERED)
+    val uiEvent: Flow<UiEvent> = events.receiveAsFlow()
 
     /** for Compose */
-    val stateList = states.map { it.key to it.value.createState() }.toMap()
+    val stateList: BaseState = (keys + LOADING).distinct().associateWith { mutableStateOf(it.default) }
+
+    /** how many loading jobs are running, so overlapping ones don't hide the loader early */
+    private var activeLoads = 0
 
     abstract fun onAction(action: Action)
 
-    /** creates MutableState<ViewState<EachModel>> for each element of the states.
-     * for Compose */
-    private inline fun <reified T : Any?> T.createState(): MutableState<State<T>> =
-        mutableStateOf(State(if (this.isNotNull()) (this as State<T>).data else null))
-
-    /** launches coroutine in viewModelScope. used in combination with call function to make requestCalls.
-     *  also handles to emit message(or Error) and loading Actions.
-     *  @see call
-     * */
+    /** launches coroutine in viewModelScope. used in combination with [call] to make requestCalls.
+     *  also handles to emit message(or Error) and loading events. */
     fun launch(
         emitLoadingAction: Boolean = true,
         emitErrorMsgAction: Boolean = false,
-        propagateCancellationException: Boolean = false,
         onStart: (CoroutineScope.() -> Unit)? = null,
         onFinish: (() -> Unit)? = null,
         onException: ((Exception) -> Unit)? = null,
@@ -73,119 +55,100 @@ abstract class BaseViewModel(
     ): Job {
         return viewModelScope.launch {
             onStart?.invoke(this)
-            if (emitLoadingAction) emitEvent(UiEvent.Loading())
+            if (emitLoadingAction) loadingStarted()
             try {
                 block.invoke(this)
+            } catch (e: CancellationException) {
+                throw e // cancelled (e.g. screen closed): not an error
             } catch (e: Exception) {
                 onException?.invoke(e)
-                if (emitLoadingAction) emitEvent(UiEvent.Loading(false))
-                handleException(e, emitErrorMsgAction, propagateCancellationException)
+                handleException(e, emitErrorMsgAction)
+            } finally {
+                if (emitLoadingAction) loadingFinished()
             }
-            if (emitLoadingAction) emitEvent(UiEvent.Loading(false))
         }.apply {
             invokeOnCompletion { onFinish?.invoke() }
         }
     }
 
-    private fun handleException(
-        e: Exception,
-        emitErrorMsgAction: Boolean,
-        propagateCancellationException: Boolean
-    ) {
+    private fun loadingStarted() {
+        activeLoads++
+        updateState(LOADING, true)
+    }
+
+    private fun loadingFinished() {
+        activeLoads = (activeLoads - 1).coerceAtLeast(0)
+        updateState(LOADING, activeLoads > 0)
+    }
+
+    private fun handleException(e: Exception, emitErrorMsgAction: Boolean) {
         e.printStackTrace()
-        fun emitMsg(msg: String) {
-            if (emitErrorMsgAction) UiEvent.Message(msg).emit()
+        if (!emitErrorMsgAction) return
+        val msg = when (e) {
+            is IOException -> e.message ?: "network Error"
+            else -> e.message ?: "some error occurred"
         }
-        when (e) {
-            is CancellationException -> emitMsg("Cancellation Exception")
-            is IOException -> emitMsg(e.message ?: "network Error")
-            else -> emitMsg(e.message ?: "some error occurred")
-        }
-        if (propagateCancellationException) throw CancellationException()
+        UiEvent.Message(msg).emit()
     }
 
-    /** makes serviceCall and updates corresponding State.
-     *
-     *  parameter: [response] - takes serviceCall that returns Result<YourServiceCallResponseModel>.
-     *  parameter: [stateKey] - takes index of corresponding ViewState from [states].
-     *  @see states
-     * */
-    suspend inline fun <reified T : Any?> CoroutineScope.call(
-        response: Result<T>, stateKey: String,
+    /** saves a successful [response] in [key]; on failure keeps the old value and emits the error message. */
+    suspend fun <T> CoroutineScope.call(
+        response: Result<T>,
+        key: StateKey<T>,
         onError: (Throwable?) -> Unit = {},
-        onSuccess: (Result<T>) -> Unit = {},
+        onSuccess: (T) -> Unit = {},
     ) {
-        if (isActive) {
-            if (response.isSuccess) {
-                onSuccess.invoke(response)
-                response.getOrNull().saveIn(stateKey)
-            } else {
-                onError.invoke(response.exceptionOrNull())
-                stateKey.setValue(null)
-                response.exceptionOrNull()?.message?.let { emitEvent(UiEvent.Message(it)) }
+        if (!isActive) return
+        response
+            .onSuccess {
+                onSuccess(it)
+                updateState(key, it)
             }
-        }
+            .onFailure {
+                onError(it)
+                it.message?.let { msg -> emitEvent(UiEvent.Message(msg)) }
+            }
     }
 
-    fun <T> updateState(keyString: String, value: T) {
-        stateList[keyString]?.postChange { copy(value) }
-    }
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> stateOf(key: StateKey<T>): MutableState<T> =
+        (stateList[key] ?: error("State '$key' isn't registered in ${this::class.simpleName}"))
+                as MutableState<T>
 
-
-    // ---------------------- String Extension - State Setters ----------------------
-
-    /** set value to a state by calling this function on "StateKey" String */
-    infix fun <T> String.setValue(value: T) {
-        updateState(this, value)
-    }
-
-    /** set value to a state by calling invoke() operator on "StateKey" String */
-    operator fun <T> String.invoke(value: T) {
-        updateState(this, value)
+    fun <T> updateState(key: StateKey<T>, value: T) {
+        stateOf(key).value = value
     }
 
 
-    // ---------------------- String Extension - State Getters ----------------------
+    // ---------------------- State Getters ----------------------
 
-    /** returns state data by stateKey */
-    fun <T> String.typeOf() = stateList[this]?.takeAs<T>()
+    /** returns the state's current value */
+    operator fun <T> StateKey<T>.invoke(): T = stateOf(this).value
 
-    /** returns state data by stateKey */
-    fun <T> String.state() = stateList[this]?.takeAs<T>()
-
-    /** returns state data by calling invoke() operator on a stateKey */
-    operator fun <T> String.invoke() = stateList[this]?.takeAs<T>()
-
-    /** gets State<String> by calling [!] or - not() operator on a stateKey if in context of [BaseState]
-     * @return value or Blank string if value is null
-     *
-     * @sample !STATE_KEY_STRING
-     * @exception DOES_NOT use with invoke() or any state getter*/
-    operator fun String.not(): String = stateList[this@not]?.takeAs<String>() ?: ""
-
-    /** gets state by calling on a stateKey in Composable functions if in context of [BaseState]
-     * @return value or Blank string if value is null
-     *
-     * @exception DOES_NOT use with invoke() or any state getter*/
-    fun String.stateOrBlank(): String = stateList[this@stateOrBlank]?.takeAs<String>() ?: ""
+    /** returns a String state's value: `!ARTIST` */
+    operator fun StateKey<String>.not(): String = stateOf(this).value
 
 
-    // ----------------------Infix - State Setters ----------------------
+    // ---------------------- State Setters ----------------------
 
-    /** set value to a state with corresponding "stateKey" by calling this function on value itself */
-    infix fun <T> T.saveIn(stateKey: String) {
-        updateState(stateKey, this)
-    }
+    /** sets the state's value: `IS_PLAYING(true)` */
+    operator fun <T> StateKey<T>.invoke(value: T) = updateState(this, value)
 
-    /** set value to a state with corresponding "stateKey" by calling this function on value itself */
-    infix fun <T> T.saveInStateOf(stateKey: String) = this.saveIn(stateKey)
+    /** sets the state's value: `true saveIn IS_PLAYING` */
+    infix fun <T> T.saveIn(key: StateKey<T>) = updateState(key, this)
+
+    /** keeps [key] updated with every value of this flow while the ViewModel lives */
+    fun <T> Flow<T>.collectIn(key: StateKey<T>): Job =
+        viewModelScope.launch { collect { updateState(key, it) } }
 
 
     // ---------------------- Emit UiEvents ----------------------
 
-    /** launches a coroutine and emits Action */
-    fun <T : UiEvent> T.emit() = viewModelScope.launch { uiEvent.emit(this@emit) }
+    /** sends the event to the screen */
+    fun <T : UiEvent> T.emit() {
+        events.trySend(this)
+    }
 
-    /** use inside coroutineScope to emit Action */
-    suspend fun emitEvent(uiEvent: UiEvent) = this.uiEvent.emit(uiEvent)
+    /** use inside coroutineScope to send the event */
+    suspend fun emitEvent(uiEvent: UiEvent) = events.send(uiEvent)
 }

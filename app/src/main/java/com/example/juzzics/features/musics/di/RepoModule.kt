@@ -7,5 +7,5 @@ import org.koin.dsl.module
 
 
 val musicRepoModule = module {
-    single { MusicRepoImpl(get()) } bind MusicRepo::class
+    single { MusicRepoImpl(get(), get()) } bind MusicRepo::class
 }

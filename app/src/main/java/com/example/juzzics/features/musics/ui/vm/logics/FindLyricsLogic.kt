@@ -6,5 +6,5 @@ import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.FOURTH
 import com.example.juzzics.features.musics.ui.vm.MusicVM.MotionScenes.THIRD
 
 fun MusicVM.findLyricsSceneUpdate() {
-    (if (MusicVM.SCENE_NAME<String>() == THIRD) FOURTH else THIRD) saveIn SCENE_NAME
+    (if (!SCENE_NAME == THIRD) FOURTH else THIRD) saveIn SCENE_NAME
 }

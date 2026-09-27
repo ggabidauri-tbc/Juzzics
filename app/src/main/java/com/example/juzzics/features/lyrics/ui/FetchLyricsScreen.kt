@@ -18,18 +18,18 @@ import com.example.juzzics.common.base.BaseHandler
 import com.example.juzzics.common.base.extensions.with2
 import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseState
+import com.example.juzzics.common.base.viewModel.LOADING
 import com.example.juzzics.common.base.viewModel.UiEvent
 import com.example.juzzics.common.base.viewModel.invoke
 import com.example.juzzics.common.base.viewModel.not
 import com.example.juzzics.common.util.converters.ofHeight
-import com.example.juzzics.features.lyrics.domain.model.LyricsDomain
 import com.example.juzzics.features.lyrics.ui.vm.FetchLyricsVM
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.Flow
 
 @Composable
 fun FetchLyricsScreen(
     states: BaseState,
-    uiEvent: SharedFlow<UiEvent>,
+    uiEvent: Flow<UiEvent>,
     onAction: (Action) -> Unit
 ) {
     with2(first = states, second = FetchLyricsVM) {
@@ -38,6 +38,7 @@ fun FetchLyricsScreen(
             color = MaterialTheme.colorScheme.background
         ) {
             uiEvent.BaseHandler(
+                loading = LOADING(),
                 content = {
                     Column(
                         Modifier
@@ -55,7 +56,7 @@ fun FetchLyricsScreen(
                             Text("Search Lyrics")
                         }
                         Text(
-                            text = LYRICS<LyricsDomain>()?.lyrics.orEmpty(),
+                            text = LYRICS()?.lyrics.orEmpty(),
                             textAlign = TextAlign.Center,
                             modifier = Modifier.verticalScroll(rememberScrollState(0))
                         )

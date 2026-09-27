@@ -1,6 +1,6 @@
 ---
 name: juzzics-feature-architecture
-description: Enforces the feature module architecture, BaseViewModel pattern, custom State/Action extensions, and Koin DI setup used in the Juzzics app (as seen in features/lyrics). Use this skill whenever creating or refactoring a feature module in Juzzics.
+description: Enforces the feature module architecture, BaseViewModel pattern, typed StateKey state, Action extensions, and Koin DI setup used in the Juzzics app (as seen in features/lyrics). Use this skill whenever creating or refactoring a feature module in Juzzics.
 license: MIT
 metadata:
   author: Juzzics
@@ -38,13 +38,15 @@ com.example.juzzics.features.<feature_name>/
 
 ## 1. ViewModel & BaseViewModel Conventions
 
-All ViewModels MUST extend `BaseViewModel` and initialize state using string keys mapped to `State<T>()`.
+All ViewModels MUST extend `BaseViewModel` and declare their state as typed `StateKey<T>`s (name + default value).
 
 ### Key Rules:
-1. **Companion Keys**: Define all state keys as `const val` inside the `companion object`.
-2. **State Map**: Pass `mutableMapOf` with initial `State<T>()` or `State("initial")` to `BaseViewModel`.
-3. **Actions**: Define screen actions as `Action` implementations (`data object` or `data class`) inside or alongside the ViewModel.
-4. **`onAction` Handling**: Delegate complex operations to VM logic extension functions located in `ui/vm/logics/`.
+1. **Companion Keys**: Define all state keys as `val KEY = StateKey("name", default)` inside the `companion object`
+   (nullable state: `StateKey<Type?>("name", null)`).
+2. **Register Keys**: Pass every key in `listOf(...)` to `BaseViewModel` (an unregistered key throws when used).
+3. **Flows**: Keep a key updated from a `Flow` with `flow.collectIn(KEY)` (e.g. Room queries in `init`).
+4. **Actions**: Define screen actions as `Action` implementations (`data object` or `data class`) inside or alongside the ViewModel.
+5. **`onAction` Handling**: Delegate complex operations to VM logic extension functions located in `ui/vm/logics/`.
 
 ### Canonical ViewModel (`FetchLyricsVM.kt`):
 ```kotlin
@@ -52,24 +54,18 @@ package com.example.juzzics.features.lyrics.ui.vm
 
 import com.example.juzzics.common.base.viewModel.Action
 import com.example.juzzics.common.base.viewModel.BaseViewModel
-import com.example.juzzics.common.base.viewModel.State
+import com.example.juzzics.common.base.viewModel.StateKey
 import com.example.juzzics.features.lyrics.domain.model.LyricsDomain
 import com.example.juzzics.features.lyrics.domain.usecase.FetchLyricsUseCase
 import com.example.juzzics.features.lyrics.ui.vm.logics.fetchLyrics
 
 class FetchLyricsVM(
     val fetchLyricsUseCase: FetchLyricsUseCase
-) : BaseViewModel(
-    mutableMapOf(
-        LYRICS to State<LyricsDomain>(),
-        ARTIST to State("nightwish"),
-        TITLE to State("ghost love score")
-    )
-) {
+) : BaseViewModel(listOf(LYRICS, ARTIST, TITLE)) {
     companion object {
-        const val LYRICS = "Lyrics"
-        const val ARTIST = "Artist"
-        const val TITLE = "Title"
+        val LYRICS = StateKey<LyricsDomain?>("lyrics", null)
+        val ARTIST = StateKey("artist", "nightwish")
+        val TITLE = StateKey("title", "ghost love score")
     }
 
     override fun onAction(action: Action) {
@@ -95,8 +91,8 @@ Separate execution logic from the ViewModel file by creating Kotlin extension fu
 ### Key Rules:
 - Place functions in `com.example.juzzics.features.<feature>.ui.vm.logics`.
 - Use `launch(emitErrorMsgAction = true)` helper from `BaseViewModel`.
-- Use `call(useCaseResult, STATE_KEY)` to execute calls and automatically update the corresponding `State`.
-- Use `!STATE_KEY` (not operator) to retrieve string state values or fallback to `""`.
+- Use `call(useCaseResult, STATE_KEY)` to execute calls and automatically update the key's state (on failure the old value stays and the error message is emitted).
+- Read with `KEY()` (typed, no type argument needed), `!STRING_KEY` for Strings; write with `KEY(value)` or `value saveIn KEY`.
 
 ### Canonical VM Logic (`FetchLyricsLogic.kt`):
 ```kotlin
@@ -122,7 +118,8 @@ Screens MUST use `with2` extension to bind both `BaseState` and the ViewModel's 
 ### Key Extensions Reference:
 - `with2(first = states, second = <Feature>VM)`: Grants Composable context to `BaseState` and the VM's companion keys.
 - `!ARTIST`: Gets String state value directly using the `not()` operator on companion key string.
-- `LYRICS<LyricsDomain>()`: Gets generic typed model from `BaseState` using `invoke()`.
+- `LYRICS()`: Gets the typed value from `BaseState` using `invoke()` (the key carries the type).
+- `KEY.stateValue()`: Reads a state in non-Composable code (click handlers, lambdas).
 - `uiEvent.BaseHandler`: Automatically handles loading overlays and toast error messages.
 
 ### Canonical Screen (`FetchLyricsScreen.kt`):
@@ -175,7 +172,7 @@ fun FetchLyricsScreen(
                         Button(onClick = { onAction(FetchLyricsVM.FetchLyricsAction) }) {
                             Text("Search")
                         }
-                        Text(text = LYRICS<LyricsDomain>()?.lyrics.orEmpty())
+                        Text(text = LYRICS()?.lyrics.orEmpty())
                     }
                 }
             )
@@ -193,7 +190,7 @@ Each feature MUST define clean, separate Koin modules under `di/`:
 1. **`ServiceModule.kt`**: Retrofit service definition.
 2. **`RepoModule.kt`**: Repository binding (`single { RepoImpl(get()) } bind Repo::class`).
 3. **`UseCasesModule.kt`**: Factory definitions (`factory { MyUseCase(get()) }`).
-4. **`ViewModelsModule.kt`**: ViewModel definition (`viewModel { MyVM(get()) }`).
+4. **`ViewModelsModule.kt`**: ViewModel definition (`viewModelOf(::MyVM)`).
 
 ---
 
@@ -201,10 +198,10 @@ Each feature MUST define clean, separate Koin modules under `di/`:
 
 When implementing or reviewing a feature module in Juzzics, ensure:
 - [ ] Folder hierarchy follows `data`, `domain`, `ui`, `di`.
-- [ ] ViewModel extends `BaseViewModel` with a `mutableMapOf` of initial `State`s.
-- [ ] State keys are defined in the `companion object`.
+- [ ] ViewModel extends `BaseViewModel(listOf(...all keys))`.
+- [ ] State keys are `StateKey<T>`s defined in the `companion object`.
 - [ ] ViewModel logic is extracted into `ui/vm/logics/<Name>Logic.kt`.
 - [ ] Composable UI uses `with2(first = states, second = <Feature>VM)` to access state keys.
-- [ ] `!KEY` is used for String state reading and `KEY<Type>()` for object state reading.
+- [ ] `!KEY` is used for String state reading and `KEY()` for other state reading.
 - [ ] `uiEvent.BaseHandler` handles side effects (loading/messages).
 - [ ] Koin DI modules are created under `di/`.

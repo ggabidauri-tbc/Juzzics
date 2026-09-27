@@ -4,11 +4,13 @@ plugins {
 
     id("org.jetbrains.kotlin.plugin.compose")
     id("kotlin-parcelize")
+    id("com.google.devtools.ksp")
+    id("androidx.room")
 }
 
 android {
     namespace = "com.example.juzzics"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.juzzics"
@@ -51,6 +53,10 @@ android {
         }
     }
 }
+room {
+    schemaDirectory("$projectDir/schemas")
+}
+
 kotlin {
     compilerOptions {
         freeCompilerArgs.add("-Xcontext-parameters")
@@ -67,6 +73,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     testImplementation("junit:junit:4.13.2")
@@ -90,7 +97,7 @@ dependencies {
 
     implementation("androidx.wear.compose:compose-material:1.4.0")
 
-    implementation("io.coil-kt:coil-compose:2.2.2")
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     implementation("com.google.code.gson:gson:2.10.1")
 
@@ -98,4 +105,21 @@ dependencies {
 
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+
+    val roomVersion = "2.8.5"
+    implementation("androidx.room:room-runtime:$roomVersion")
+    implementation("androidx.room:room-ktx:$roomVersion")
+    ksp("androidx.room:room-compiler:$roomVersion")
+
+    val media3Version = "1.11.1"
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-session:$media3Version")
+
+    implementation("androidx.palette:palette-ktx:1.0.0")
+
+    // play and control music on nearby phones, no internet needed
+    implementation("com.google.android.gms:play-services-nearby:19.3.0")
+
+    // home-screen widget
+    implementation("androidx.glance:glance-appwidget:1.1.1")
 }

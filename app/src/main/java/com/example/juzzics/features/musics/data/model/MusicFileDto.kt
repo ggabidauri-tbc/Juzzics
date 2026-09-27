@@ -10,7 +10,9 @@ data class MusicFileDto(
     val data: String?,
     val duration: Long,
     val icon: Uri,
-    val isPlaying: Boolean = false
+    val isPlaying: Boolean = false,
+    val dateAdded: Long = 0,
 )
 
-fun MusicFileDto.toDomain() = MusicFileDomain(id, title, artist, data, duration, icon, isPlaying)
+fun MusicFileDto.toDomain() =
+    MusicFileDomain(id, title, artist, data, duration, icon, isPlaying, dateAdded)

@@ -5,4 +5,5 @@ sealed class Screen(val route: String) {
     data object MusicsScreen : Screen("MusicsScreen")
     data object PlaylistsScreen : Screen("PlaylistsScreen")
     data object FetchLyricsScreen : Screen("FetchLyricsScreen")
+    data object NearbyScreen : Screen("NearbyScreen")
 }
