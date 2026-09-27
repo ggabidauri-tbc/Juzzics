@@ -12,7 +12,7 @@ data class NearbyMessage(
     val songs: List<RemoteSong>? = null,
     val page: Int? = null,
     val pageCount: Int? = null,
-    /** PLAY */
+    /** PLAY, STREAM_REQUEST, FILE_INFO, FILE_FAILED */
     val songId: Long? = null,
     /** COMMAND: a [com.example.juzzics.features.nearby.domain.RemoteCommand] name */
     val command: String? = null,
@@ -20,6 +20,11 @@ data class NearbyMessage(
     val title: String? = null,
     val artist: String? = null,
     val isPlaying: Boolean? = null,
+    /** FILE_INFO: which file payload this describes, and about the song (title / artist above) */
+    val payloadId: Long? = null,
+    val durationMs: Long? = null,
+    /** file extension, e.g. "mp3" */
+    val extension: String? = null,
 ) {
     companion object {
         /** "send me your songs" */
@@ -30,5 +35,11 @@ data class NearbyMessage(
         const val PLAY = "play"
         const val COMMAND = "command"
         const val NOW_PLAYING = "now_playing"
+        /** "send me this song, I want to hear it on my phone" */
+        const val STREAM_REQUEST = "stream_request"
+        /** "the file coming next is this song, play it" */
+        const val FILE_INFO = "file_info"
+        /** "couldn't send you that song" */
+        const val FILE_FAILED = "file_failed"
     }
 }

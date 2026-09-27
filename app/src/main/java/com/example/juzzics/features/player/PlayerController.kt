@@ -4,6 +4,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.provider.MediaStore
 import android.content.ContentUris
+import android.net.Uri
+import java.io.File
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.media3.common.C
@@ -226,6 +228,7 @@ class PlayerController(
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val song = mediaItem?.let { knownSongs[it.mediaId] ?: it.toSong() } ?: return
+            if (song.id < 0) return // a friend's song (or a fake one): not in the history
             scope.launch { runCatching { recordPlay(song) } }
         }
 
@@ -281,7 +284,7 @@ class PlayerController(
 
     private fun MusicFileDomain.toMediaItem(): MediaItem = MediaItem.Builder()
         .setMediaId(mediaId)
-        .setUri(ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id))
+        .setUri(playableUri())
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(title)
@@ -291,6 +294,16 @@ class PlayerController(
                 .build()
         )
         .build()
+
+    /**
+     * the phone's own songs play from the media library; songs a friend sent over Nearby
+     * (negative id) play from the file they were saved to
+     */
+    private fun MusicFileDomain.playableUri(): Uri {
+        val path = data
+        return if (id < 0 && path != null && path.startsWith("/")) File(path).toUri()
+        else ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+    }
 
     /** for items queued before the app was restarted (only what the MediaItem carries) */
     private fun MediaItem.toSong() = MusicFileDomain(

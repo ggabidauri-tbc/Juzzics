@@ -23,23 +23,29 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -75,6 +81,8 @@ import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
 import com.example.juzzics.features.nearby.domain.PendingConnection
 import com.example.juzzics.features.nearby.domain.RemoteCommand
+import com.example.juzzics.features.nearby.domain.RemoteSong
+import com.example.juzzics.features.nearby.domain.SongTransfer
 import com.example.juzzics.features.nearby.ui.vm.NearbyVM
 
 /** permissions Nearby needs on this Android version */
@@ -142,9 +150,19 @@ fun NearbyScreen(
                     }
                 }
 
+                openFriend != null && SEND_MODE() -> SendSongsPage(
+                    friend = openFriend,
+                    mySongs = MY_SONGS(),
+                    query = !FRIEND_QUERY,
+                    transfers = nearby.transfers,
+                    onAction = onAction,
+                )
+
                 openFriend != null -> FriendLibrary(
                     friend = openFriend,
                     query = !FRIEND_QUERY,
+                    listenHere = LISTEN_HERE(),
+                    transfers = nearby.transfers,
                     onAction = onAction,
                 )
 
@@ -179,6 +197,10 @@ private fun NearbyHome(nearby: NearbyState, onAction: (Action) -> Unit) {
             )
         }
         item { ShareCard(nearby, onAction) }
+
+        if (nearby.transfers.isNotEmpty()) {
+            item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(vertical = 8.dp)) { Transfers(nearby.transfers) } } }
+        }
 
         if (nearby.friends.isNotEmpty()) {
             item { Text("Connected", style = MaterialTheme.typography.titleLarge) }
@@ -311,14 +333,24 @@ private fun FriendCard(friend: ConnectedFriend, onAction: (Action) -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
             RemoteControls(friend, onAction)
-            OutlinedButton(
-                onClick = { onAction(NearbyVM.OpenFriendAction(friend.endpointId)) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    if (friend.library.isEmpty() && !friend.libraryComplete) "Loading their songs…"
-                    else "Their songs (${friend.library.size})"
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { onAction(NearbyVM.OpenFriendAction(friend.endpointId)) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        if (friend.library.isEmpty() && !friend.libraryComplete) "Loading songs…"
+                        else "Their songs (${friend.library.size})",
+                        maxLines = 1
+                    )
+                }
+                OutlinedButton(
+                    onClick = { onAction(NearbyVM.OpenSendAction(friend.endpointId)) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, Modifier.size(18.dp))
+                    Text("Send my song", maxLines = 1, modifier = Modifier.padding(start = 6.dp))
+                }
             }
         }
     }
@@ -354,84 +386,207 @@ private fun RemoteControls(friend: ConnectedFriend, onAction: (Action) -> Unit) 
     }
 }
 
-/** a friend's songs; tap one to play it on their phone */
+/** a friend's songs: tap one to play it on their phone, or to hear it on this one */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FriendLibrary(friend: ConnectedFriend, query: String, onAction: (Action) -> Unit) {
+private fun FriendLibrary(
+    friend: ConnectedFriend,
+    query: String,
+    listenHere: Boolean,
+    transfers: List<SongTransfer>,
+    onAction: (Action) -> Unit,
+) {
     BackHandler { onAction(NearbyVM.OpenFriendAction(null)) }
-    val songs = remember(friend.library, query) {
-        val q = query.trim()
-        if (q.isEmpty()) friend.library
-        else friend.library.filter { it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true) }
-    }
+    val songs = remember(friend.library, query) { friend.library.matching(query) }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { onAction(NearbyVM.OpenFriendAction(null)) }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "${friend.name}'s songs",
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "Tap a song to play it on their phone",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        OutlinedTextField(
-            value = query,
-            onValueChange = { onAction(NearbyVM.FriendQueryAction(it)) },
-            placeholder = { Text("Search their songs") },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
+        PageHeader(
+            title = "${friend.name}'s songs",
+            subtitle = if (listenHere) "Tap a song to hear it on your phone (it's sent over first)"
+            else "Tap a song to play it on their phone",
+            onBack = { onAction(NearbyVM.OpenFriendAction(null)) }
         )
-        RemoteControls(friend, onAction)
+        Row(
+            Modifier.padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Play on", style = MaterialTheme.typography.labelLarge)
+            FilterChip(
+                selected = !listenHere,
+                onClick = { onAction(NearbyVM.ListenHereModeAction(false)) },
+                label = { Text("Their phone") },
+                leadingIcon = { Icon(Icons.Filled.Speaker, contentDescription = null, Modifier.size(18.dp)) }
+            )
+            FilterChip(
+                selected = listenHere,
+                onClick = { onAction(NearbyVM.ListenHereModeAction(true)) },
+                label = { Text("My phone") },
+                leadingIcon = { Icon(Icons.Filled.Headphones, contentDescription = null, Modifier.size(18.dp)) }
+            )
+        }
+        SearchField(query, "Search their songs", onAction)
+        if (!listenHere) RemoteControls(friend, onAction)
+        Transfers(transfers)
         if (songs.isEmpty()) {
             EmptyState(
                 icon = Icons.Filled.PhoneAndroid,
                 title = if (!friend.libraryComplete) "Loading their songs…" else "No songs found",
             )
         } else {
-            LazyColumn(Modifier.weight(1f)) {
-                items(songs, key = { it.id }) { song ->
-                    val isPlaying = friend.nowPlaying?.title == song.title
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { onAction(NearbyVM.PlayOnFriendAction(friend.endpointId, song.id)) }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                song.title,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isPlaying) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                song.artist.ifBlank { "Unknown artist" },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1
-                            )
-                        }
-                        Text(
-                            song.durationMs.toClock(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+            SongList(
+                songs = songs,
+                isHighlighted = { !listenHere && friend.nowPlaying?.title == it.title },
+                modifier = Modifier.weight(1f),
+                onClick = { song ->
+                    onAction(
+                        if (listenHere) NearbyVM.ListenHereAction(friend.endpointId, song)
+                        else NearbyVM.PlayOnFriendAction(friend.endpointId, song.id)
+                    )
                 }
+            )
+        }
+    }
+}
+
+/** this phone's songs: tap one to send it to the friend and play it there */
+@Composable
+private fun SendSongsPage(
+    friend: ConnectedFriend,
+    mySongs: List<RemoteSong>?,
+    query: String,
+    transfers: List<SongTransfer>,
+    onAction: (Action) -> Unit,
+) {
+    BackHandler { onAction(NearbyVM.OpenFriendAction(null)) }
+    val songs = remember(mySongs, query) { mySongs.orEmpty().matching(query) }
+    Column(Modifier.fillMaxSize()) {
+        PageHeader(
+            title = "Send to ${friend.name}",
+            subtitle = "Tap one of your songs to play it on their phone",
+            onBack = { onAction(NearbyVM.OpenFriendAction(null)) }
+        )
+        SearchField(query, "Search your songs", onAction)
+        Transfers(transfers)
+        if (songs.isEmpty()) {
+            EmptyState(
+                icon = Icons.AutoMirrored.Filled.Send,
+                title = if (mySongs == null) "Loading your songs…" else "No songs found",
+            )
+        } else {
+            SongList(
+                songs = songs,
+                isHighlighted = { false },
+                modifier = Modifier.weight(1f),
+                onClick = { song -> onAction(NearbyVM.SendToFriendAction(friend.endpointId, song.id)) }
+            )
+        }
+    }
+}
+
+private fun List<RemoteSong>.matching(query: String): List<RemoteSong> {
+    val q = query.trim()
+    return if (q.isEmpty()) this
+    else filter { it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true) }
+}
+
+@Composable
+private fun PageHeader(title: String, subtitle: String, onBack: () -> Unit) {
+    Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchField(query: String, placeholder: String, onAction: (Action) -> Unit) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = { onAction(NearbyVM.FriendQueryAction(it)) },
+        placeholder = { Text(placeholder) },
+        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+        singleLine = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    )
+}
+
+@Composable
+private fun SongList(
+    songs: List<RemoteSong>,
+    isHighlighted: (RemoteSong) -> Boolean,
+    onClick: (RemoteSong) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyColumn(modifier) {
+        items(songs, key = { it.id }) { song ->
+            val highlighted = isHighlighted(song)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(song) }
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        song.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
+                        color = if (highlighted) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        song.artist.ifBlank { "Unknown artist" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+                Text(
+                    song.durationMs.toClock(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/** songs on their way between the phones, with progress */
+@Composable
+private fun Transfers(transfers: List<SongTransfer>) {
+    transfers.forEach { transfer ->
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        ) {
+            Text(
+                if (transfer.incoming) "Getting \"${transfer.title}\" from ${transfer.friendName}…"
+                else "Sending \"${transfer.title}\" to ${transfer.friendName}…",
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val progress = transfer.progress
+            if (progress == null) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
+            } else {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                )
             }
         }
     }

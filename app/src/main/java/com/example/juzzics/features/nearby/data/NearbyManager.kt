@@ -1,10 +1,14 @@
 package com.example.juzzics.features.nearby.data
 
+import android.content.ContentUris
 import android.content.Context
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.provider.Settings
 import androidx.core.content.edit
+import com.example.juzzics.features.musics.domain.model.MusicFileDomain
 import com.example.juzzics.features.musics.domain.repo.MusicRepo
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
 import com.example.juzzics.features.nearby.domain.NearbyDevice
@@ -13,6 +17,8 @@ import com.example.juzzics.features.nearby.domain.PendingConnection
 import com.example.juzzics.features.nearby.domain.RemoteCommand
 import com.example.juzzics.features.nearby.domain.RemoteNowPlaying
 import com.example.juzzics.features.nearby.domain.RemoteSong
+import com.example.juzzics.features.nearby.domain.SongTransfer
+import com.example.juzzics.features.player.OpenPlayerRequests
 import com.example.juzzics.features.player.PlayerController
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
@@ -42,11 +48,15 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileInputStream
 
 /**
  * Connects phones running Juzzics without internet (Google Nearby Connections:
  * Bluetooth to find each other, then Wi-Fi Direct for the data), so friends can browse
- * each other's songs and play / control music on each other's phones.
+ * each other's songs, play / control music on each other's phones, and send a song
+ * to the other phone to hear it there (the whole file is sent, then played).
  *
  * App-wide (one instance), so connections stay up while you switch screens.
  */
@@ -190,6 +200,199 @@ class NearbyManager(
     fun sendCommand(endpointId: String, command: RemoteCommand) =
         send(endpointId, NearbyMessage(NearbyMessage.COMMAND, command = command.name))
 
+    // ---------------------- songs sent between phones ----------------------
+
+    /** file payloads coming in, by payload id */
+    private val incomingFiles = mutableMapOf<Long, Payload>()
+    /** what each incoming file is (comes as a separate small message, in any order) */
+    private val incomingInfo = mutableMapOf<Long, NearbyMessage>()
+    /** incoming files fully received */
+    private val receivedPayloads = mutableSetOf<Long>()
+    /** incoming files we asked for ("listen here"): the player opens when they start */
+    private val requestedPayloads = mutableSetOf<Long>()
+    /** files this phone is sending */
+    private val outgoingPayloads = mutableSetOf<Long>()
+
+    /** gets one of their songs to play it on this phone */
+    fun listenHere(endpointId: String, song: RemoteSong) {
+        val key = requestKey(endpointId, song.id)
+        if (_state.value.transfers.any { it.key == key }) return
+        addTransfer(SongTransfer(key, endpointId, song.title, friendName(endpointId), incoming = true))
+        send(endpointId, NearbyMessage(NearbyMessage.STREAM_REQUEST, songId = song.id))
+    }
+
+    /** sends one of this phone's songs to play it on theirs */
+    fun sendToFriend(endpointId: String, songId: Long) = sendSongFile(endpointId, songId, askedByFriend = false)
+
+    /** this phone's songs, to pick one to send */
+    suspend fun mySongs(): List<RemoteSong> =
+        musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).map { it.toRemote() }
+
+    private fun sendSongFile(endpointId: String, songId: Long, askedByFriend: Boolean) {
+        scope.launch {
+            val song = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).find { it.id == songId }
+            val file = song?.let {
+                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
+                withContext(Dispatchers.IO) { runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull() }
+            }
+            if (song == null || file == null) {
+                if (askedByFriend) send(endpointId, NearbyMessage(NearbyMessage.FILE_FAILED, songId = songId))
+                else _state.update { it.copy(error = "Couldn't open that song to send it") }
+                return@launch
+            }
+            val payload = Payload.fromFile(file)
+            outgoingPayloads += payload.id
+            addTransfer(
+                SongTransfer(outKey(payload.id), endpointId, song.title.orEmpty(), friendName(endpointId), incoming = false, progress = 0f)
+            )
+            // first what it is, then the file itself
+            send(
+                endpointId,
+                NearbyMessage(
+                    NearbyMessage.FILE_INFO,
+                    songId = songId,
+                    payloadId = payload.id,
+                    title = song.title,
+                    artist = song.artist?.takeUnless { it == "<unknown>" },
+                    durationMs = song.duration,
+                    extension = song.data?.substringAfterLast('.', "")?.take(5),
+                )
+            )
+            client.sendPayload(endpointId, payload)
+                .addOnFailureListener { e -> transferFailed(outKey(payload.id), payload.id, "Couldn't send \"${song.title}\". ${e.explain()}") }
+        }
+    }
+
+    private fun receiveFileInfo(endpointId: String, message: NearbyMessage) {
+        val payloadId = message.payloadId ?: return
+        incomingInfo[payloadId] = message
+        val asked = removeTransfer(requestKey(endpointId, message.songId ?: 0))
+        if (asked) requestedPayloads += payloadId
+        addTransfer(
+            SongTransfer(inKey(payloadId), endpointId, message.title.orEmpty(), friendName(endpointId), incoming = true, progress = 0f)
+        )
+        finishIncoming(endpointId, payloadId)
+    }
+
+    private fun onFileUpdate(endpointId: String, update: PayloadTransferUpdate) {
+        val id = update.payloadId
+        val outgoing = id in outgoingPayloads
+        val incoming = id in incomingFiles || id in incomingInfo
+        if (!outgoing && !incoming) return // one of the small messages
+        val key = if (outgoing) outKey(id) else inKey(id)
+        when (update.status) {
+            PayloadTransferUpdate.Status.IN_PROGRESS ->
+                if (update.totalBytes > 0) setProgress(key, update.bytesTransferred.toFloat() / update.totalBytes)
+
+            PayloadTransferUpdate.Status.SUCCESS -> if (outgoing) {
+                outgoingPayloads -= id
+                removeTransfer(key)
+            } else {
+                receivedPayloads += id
+                finishIncoming(endpointId, id)
+            }
+
+            PayloadTransferUpdate.Status.FAILURE, PayloadTransferUpdate.Status.CANCELED ->
+                transferFailed(key, id, "The song stopped half-way. Stay closer together and try again.")
+        }
+    }
+
+    private fun transferFailed(key: String, payloadId: Long, error: String) {
+        outgoingPayloads -= payloadId
+        incomingFiles -= payloadId
+        incomingInfo -= payloadId
+        receivedPayloads -= payloadId
+        requestedPayloads -= payloadId
+        if (removeTransfer(key)) _state.update { it.copy(error = error) }
+    }
+
+    /** file and its info are both here: keep a copy and play it */
+    private fun finishIncoming(endpointId: String, payloadId: Long) {
+        if (payloadId !in receivedPayloads) return
+        val info = incomingInfo.remove(payloadId) ?: return
+        val payload = incomingFiles.remove(payloadId) ?: return
+        receivedPayloads -= payloadId
+        val asked = requestedPayloads.remove(payloadId)
+        scope.launch {
+            val file = withContext(Dispatchers.IO) { runCatching { saveReceived(payload, info) }.getOrNull() }
+            removeTransfer(inKey(payloadId))
+            if (file == null) {
+                _state.update { it.copy(error = "Couldn't save \"${info.title}\" on this phone") }
+                return@launch
+            }
+            val song = MusicFileDomain(
+                // negative: never mixed up with the phone's own songs (the player plays it from `data`)
+                id = -System.currentTimeMillis(),
+                title = info.title,
+                artist = info.artist,
+                data = file.absolutePath,
+                duration = info.durationMs ?: 0,
+                icon = Uri.EMPTY,
+            )
+            player.playQueue(listOf(song), 0, source = "From ${friendName(endpointId)}")
+            if (asked) OpenPlayerRequests.request()
+        }
+    }
+
+    /** copies the received song into the app's cache (keeps only the last few) */
+    private fun saveReceived(payload: Payload, info: NearbyMessage): File {
+        val received = payload.asFile() ?: error("not a file")
+        val dir = File(context.cacheDir, RECEIVED_DIR).apply { mkdirs() }
+        val extension = info.extension?.filter { it.isLetterOrDigit() }?.take(5)?.ifBlank { null } ?: "audio"
+        val target = File(dir, "song_${System.currentTimeMillis()}.$extension")
+        received.asParcelFileDescriptor().use { descriptor ->
+            FileInputStream(descriptor.fileDescriptor).use { input -> target.outputStream().use { input.copyTo(it) } }
+        }
+        received.deleteOriginal()
+        dir.listFiles()
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(KEEP_RECEIVED_SONGS)
+            ?.forEach { it.delete() }
+        return target
+    }
+
+    /** Nearby keeps its own copy of received files (in Downloads): not needed after we copied it */
+    @Suppress("DEPRECATION")
+    private fun Payload.File.deleteOriginal() {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) asUri()?.let { context.contentResolver.delete(it, null, null) }
+            else asJavaFile()?.delete()
+        }
+    }
+
+    private fun addTransfer(transfer: SongTransfer) =
+        _state.update { it.copy(transfers = it.transfers.filterNot { t -> t.key == transfer.key } + transfer) }
+
+    /** true if it was there */
+    private fun removeTransfer(key: String): Boolean {
+        val had = _state.value.transfers.any { it.key == key }
+        if (had) _state.update { it.copy(transfers = it.transfers.filterNot { t -> t.key == key }) }
+        return had
+    }
+
+    private fun setProgress(key: String, progress: Float) {
+        val current = _state.value.transfers.find { it.key == key } ?: return
+        // every 2%: progress updates come very often
+        if (current.progress != null && progress - current.progress < 0.02f && progress < 1f) return
+        _state.update { state ->
+            state.copy(transfers = state.transfers.map { if (it.key == key) it.copy(progress = progress) else it })
+        }
+    }
+
+    private fun requestKey(endpointId: String, songId: Long) = "request:$endpointId:$songId"
+    private fun inKey(payloadId: Long) = "in:$payloadId"
+    private fun outKey(payloadId: Long) = "out:$payloadId"
+
+    private fun friendName(endpointId: String) =
+        names[endpointId] ?: _state.value.friends.find { it.endpointId == endpointId }?.name ?: "a friend"
+
+    private fun MusicFileDomain.toRemote() = RemoteSong(
+        id = id,
+        title = title.orEmpty(),
+        artist = artist?.takeUnless { it == "<unknown>" }.orEmpty(),
+        durationMs = duration,
+    )
+
     // ---------------------- callbacks ----------------------
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
@@ -249,13 +452,19 @@ class NearbyManager(
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
+            if (payload.type == Payload.Type.FILE) {
+                // a song starts arriving (its info comes as a separate message)
+                incomingFiles[payload.id] = payload
+                return
+            }
             if (payload.type != Payload.Type.BYTES) return
             val bytes = payload.asBytes() ?: return
             val message = runCatching { gson.fromJson(String(bytes), NearbyMessage::class.java) }.getOrNull() ?: return
             handle(endpointId, message)
         }
 
-        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
+        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) =
+            onFileUpdate(endpointId, update)
     }
 
     // ---------------------- messages ----------------------
@@ -267,6 +476,13 @@ class NearbyManager(
             NearbyMessage.PLAY -> message.songId?.let { playForFriend(endpointId, it) }
             NearbyMessage.COMMAND -> message.command?.let { runCatching { RemoteCommand.valueOf(it) }.getOrNull() }
                 ?.let(::runCommand)
+            NearbyMessage.STREAM_REQUEST -> message.songId?.let { sendSongFile(endpointId, it, askedByFriend = true) }
+            NearbyMessage.FILE_INFO -> receiveFileInfo(endpointId, message)
+            NearbyMessage.FILE_FAILED -> message.songId?.let { songId ->
+                if (removeTransfer(requestKey(endpointId, songId))) {
+                    _state.update { it.copy(error = "${friendName(endpointId)}'s phone couldn't send that song") }
+                }
+            }
             NearbyMessage.NOW_PLAYING -> updateFriend(endpointId) { friend ->
                 friend.copy(
                     nowPlaying = message.title?.let {
@@ -280,14 +496,7 @@ class NearbyManager(
     /** our song list, in pages small enough for one message */
     private fun sendLibrary(endpointId: String) {
         scope.launch {
-            val songs = musicRepo.getAllLocalMusicFiles().getOrDefault(emptyList()).map {
-                RemoteSong(
-                    id = it.id,
-                    title = it.title.orEmpty(),
-                    artist = it.artist?.takeUnless { a -> a == "<unknown>" }.orEmpty(),
-                    durationMs = it.duration,
-                )
-            }
+            val songs = mySongs()
             val pages = songs.chunked(SONGS_PER_PAGE).ifEmpty { listOf(emptyList()) }
             pages.forEachIndexed { index, page ->
                 send(endpointId, NearbyMessage(NearbyMessage.LIBRARY_PAGE, songs = page, page = index, pageCount = pages.size))
@@ -365,7 +574,12 @@ class NearbyManager(
 
     private fun removeFriend(endpointId: String) {
         names.remove(endpointId)
-        _state.update { state -> state.copy(friends = state.friends.filterNot { it.endpointId == endpointId }) }
+        _state.update { state ->
+            state.copy(
+                friends = state.friends.filterNot { it.endpointId == endpointId },
+                transfers = state.transfers.filterNot { it.endpointId == endpointId },
+            )
+        }
         if (_state.value.friends.isEmpty()) {
             nowPlayingJob?.cancel()
             nowPlayingJob = null
@@ -413,5 +627,9 @@ class NearbyManager(
         const val SONGS_PER_PAGE = 80
 
         const val KEY_NAME = "device_name"
+
+        /** folder in the app's cache for songs friends sent */
+        const val RECEIVED_DIR = "nearby_songs"
+        const val KEEP_RECEIVED_SONGS = 10
     }
 }

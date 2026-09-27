@@ -48,7 +48,21 @@ data class NearbyState(
     val found: List<NearbyDevice> = emptyList(),
     val pending: PendingConnection? = null,
     val friends: List<ConnectedFriend> = emptyList(),
+    /** songs being sent to / from this phone */
+    val transfers: List<SongTransfer> = emptyList(),
     val error: String? = null,
+)
+
+/** A song file on its way between two phones. */
+data class SongTransfer(
+    val key: String,
+    val endpointId: String,
+    val title: String,
+    val friendName: String,
+    /** true: coming to this phone; false: this phone is sending it */
+    val incoming: Boolean,
+    /** 0..1, null while waiting for the other phone to start sending */
+    val progress: Float? = null,
 )
 
 /** Remote-control commands sent to a friend's phone. */
