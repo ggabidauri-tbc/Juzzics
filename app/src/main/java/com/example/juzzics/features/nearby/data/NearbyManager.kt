@@ -9,6 +9,7 @@ import android.util.Base64
 import android.content.Context
 import android.media.AudioManager
 import android.os.Build
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
 import androidx.core.content.edit
@@ -19,6 +20,7 @@ import com.example.juzzics.features.lyrics.domain.repo.LyricsRepo
 import com.example.juzzics.features.musics.domain.model.MusicFileDomain
 import com.example.juzzics.features.musics.domain.repo.MusicRepo
 import com.example.juzzics.features.nearby.domain.BlendItem
+import com.example.juzzics.features.nearby.domain.ChatMessage
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
 import com.example.juzzics.features.nearby.domain.NearbyDevice
 import com.example.juzzics.features.nearby.domain.NearbyState
@@ -183,6 +185,77 @@ class NearbyManager(
 
     fun dismissComeToMe() = radar.dismissComeToMe()
 
+    // ---------------------- group chat ----------------------
+
+    /** the chat is on screen: nothing's unread */
+    private var chatOpen = false
+
+    fun setChatOpen(open: Boolean) {
+        chatOpen = open
+        if (open) {
+            _state.update { it.copy(unreadChat = 0) }
+            alerts.clearChat()
+        }
+    }
+
+    /** to everyone (and on through their phones); [withLocation]: "I'm here" */
+    fun sendChat(text: String, withLocation: Boolean) {
+        val clean = text.trim().take(MAX_CHAT_CHARS)
+        if (clean.isEmpty()) return
+        if (_state.value.friends.isEmpty()) {
+            AppMessages.show("Connect to a friend first")
+            return
+        }
+        val here = if (withLocation) radar.myPosition() else null
+        if (withLocation && here == null) AppMessages.show("Your position isn't known yet: sent without it")
+        val stamped = mesh.stamp(
+            NearbyMessage(NearbyMessage.CHAT, text = clean, lat = here?.lat, lon = here?.lon, accuracy = here?.accuracyM)
+        )
+        _state.value.friends.forEach { send(it.endpointId, stamped) }
+        addChat(
+            ChatMessage(
+                id = "${book.myId}/${stamped.seq}",
+                from = "You",
+                fromMe = true,
+                text = clean,
+                atMs = System.currentTimeMillis(),
+                lat = here?.lat,
+                lon = here?.lon,
+            )
+        )
+    }
+
+    private fun receiveChat(endpointId: String, message: NearbyMessage) {
+        val text = message.text?.trim()?.take(MAX_CHAT_CHARS)?.ifEmpty { null } ?: return
+        val personId = message.origin ?: endpointId
+        val name = message.originName ?: friendName(endpointId)
+        val relayed = (message.hops ?: 0) > 0
+        val lat = message.lat
+        val lon = message.lon
+        if (lat != null && lon != null) radar.notePosition(personId, name, lat, lon, message.accuracy, relayed)
+        addChat(
+            ChatMessage(
+                id = "$personId/${message.seq ?: System.nanoTime()}",
+                from = name,
+                fromMe = false,
+                text = text,
+                atMs = System.currentTimeMillis(),
+                personId = personId,
+                lat = lat,
+                lon = lon,
+                relayed = relayed,
+            )
+        )
+        if (chatOpen) return
+        _state.update { it.copy(unreadChat = it.unreadChat + 1) }
+        // a real notification also while the app is open (only not with the chat on screen)
+        alerts.chat(name, text, _state.value.unreadChat)
+    }
+
+    private fun addChat(message: ChatMessage) {
+        _state.update { it.copy(chat = (it.chat + message).takeLast(MAX_CHAT_MESSAGES)) }
+    }
+
     /** friend radar: where this phone points (degrees from north), while the radar is open */
     val radarHeading: StateFlow<Float?> = radar.heading
 
@@ -198,11 +271,11 @@ class NearbyManager(
         aloneTimer?.cancel()
         if (!on) {
             radar.setSharing(false)
-            LocationSharingService.stop(context)
+            // (the background service drops its location part by itself)
             return
         }
         radar.setSharing(true, untilMs = forMs?.let { System.currentTimeMillis() + it })
-        LocationSharingService.start(context)
+        NearbyService.start(context)
         if (forMs != null) {
             sharingTimer = scope.launch {
                 delay(forMs)
@@ -247,6 +320,10 @@ class NearbyManager(
     /** reconnect requests on their way (phone ids) */
     private val reconnecting = mutableSetOf<String>()
     private var reconnectJob: Job? = null
+    private val reconnectWakeLock: PowerManager.WakeLock =
+        (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "juzzics:reconnect")
+            .apply { setReferenceCounted(false) }
     /** the user turned "Visible to friends" off: reconnecting only looks, it doesn't advertise */
     private var hiddenByUser = false
     /** discovery wanted by the user ("Find friends") / by reconnecting, and running */
@@ -383,6 +460,7 @@ class NearbyManager(
         lost.keys.removeAll { it in connected || book.known(it) == null }
         _state.update { state -> state.copy(reconnecting = lost.keys.mapNotNull { book.known(it)?.name }) }
         if (lost.isEmpty()) {
+            runCatching { if (reconnectWakeLock.isHeld) reconnectWakeLock.release() }
             reconnectJob?.cancel()
             reconnectJob = null
             if (reconnectScanning) {
@@ -393,6 +471,8 @@ class NearbyManager(
         }
         // they have to find us too
         if (!_state.value.sharing && !hiddenByUser) startAdvertising()
+        // the search bursts keep running with the screen off (timers would stall in deep sleep)
+        runCatching { reconnectWakeLock.acquire(if (_state.value.radar.sharing) 60 * 60 * 1000L else RECONNECT_WINDOW_MS) }
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             while (lost.isNotEmpty()) {
@@ -478,6 +558,14 @@ class NearbyManager(
         rejectedByMe += pending.endpointId
         client.rejectConnection(pending.endpointId)
         _state.update { it.copy(pending = null) }
+    }
+
+    /** everyone, on purpose (the notification's "Disconnect"): nobody reconnects */
+    fun disconnectAll() {
+        _state.value.friends.forEach { disconnect(it.endpointId) }
+        lost.clear()
+        updateReconnect()
+        if (_state.value.radar.sharing) setLocationSharing(false)
     }
 
     fun disconnect(endpointId: String) {
@@ -1104,6 +1192,8 @@ class NearbyManager(
             )
         }
         if (userSearching) stopSearching()
+        // keeps the connection (chat, walkie-talkie...) alive with the app in the background
+        NearbyService.start(context)
         requestLibrary(endpointId)
         sendNowPlaying(endpointId)
         startNowPlayingUpdates()
@@ -1216,6 +1306,7 @@ class NearbyManager(
             NearbyMessage.DJ_STATE -> updateFriend(endpointId) {
                 it.copy(djOpen = message.djOpen == true, upNext = message.queue.orEmpty())
             }
+            NearbyMessage.CHAT -> receiveChat(endpointId, message)
             NearbyMessage.FILE_INFO -> receiveFileInfo(endpointId, message)
             NearbyMessage.SONG_ART -> message.payloadId?.let { id -> message.art?.let { incomingArt[id] = it } }
             NearbyMessage.SONG_LYRICS -> message.payloadId?.let { id ->
@@ -1464,6 +1555,10 @@ class NearbyManager(
         const val RECONNECT_SECOND_ASK_MS = 6_000L
         /** a reconnected phone has this long to prove who it is */
         const val PROOF_TIMEOUT_MS = 15_000L
+        /** the group chat keeps this many messages (this session only) */
+        const val MAX_CHAT_MESSAGES = 300
+        const val MAX_CHAT_CHARS = 500
+
         /** a walkie-talkie message is at most this long */
         const val MAX_TALK_MS = 60_000L
 

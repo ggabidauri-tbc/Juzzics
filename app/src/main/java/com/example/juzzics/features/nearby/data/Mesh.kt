@@ -13,6 +13,8 @@ class Mesh(private val myId: () -> String, private val myName: () -> String) {
     private var lastSeq = 0L
     /** newest counter seen, per person + kind of message */
     private val newest = mutableMapOf<String, Long>()
+    /** chat messages seen (each one counts, not just the newest), the last few hundred */
+    private val seenChats = LinkedHashSet<String>()
 
     /** this phone says it: marked as its own, with a new counter */
     fun stamp(message: NearbyMessage): NearbyMessage {
@@ -26,6 +28,12 @@ class Mesh(private val myId: () -> String, private val myName: () -> String) {
         val origin = message.origin ?: return true // an older Juzzics: just this hop
         if (origin == myId()) return false
         val seq = message.seq ?: return true
+        if (message.type == NearbyMessage.CHAT) {
+            // two paths can deliver chat messages out of order: remember each one
+            if (!seenChats.add("$origin/$seq")) return false
+            if (seenChats.size > MAX_SEEN_CHATS) seenChats.remove(seenChats.first())
+            return true
+        }
         val key = "$origin/${kind(message.type)}"
         if (seq <= (newest[key] ?: Long.MIN_VALUE)) return false
         newest[key] = seq
@@ -54,7 +62,10 @@ class Mesh(private val myId: () -> String, private val myName: () -> String) {
             NearbyMessage.PIN,
             NearbyMessage.PIN_CLEAR,
             NearbyMessage.COME_TO_ME,
+            NearbyMessage.CHAT,
         )
+
+        private const val MAX_SEEN_CHATS = 500
 
         /** a message goes at most this many phones away */
         const val MAX_HOPS = 4

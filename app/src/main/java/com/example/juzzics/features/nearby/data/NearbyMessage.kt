@@ -67,6 +67,8 @@ data class NearbyMessage(
     val originName: String? = null,
     val seq: Long? = null,
     val hops: Int? = null,
+    /** CHAT: the message */
+    val text: String? = null,
 ) {
     companion object {
         /** "send me your songs" */
@@ -131,6 +133,9 @@ data class NearbyMessage(
         const val PIN_CLEAR = "pin_clear"
         /** "come to me, I'm here" ([lat] / [lon]) */
         const val COME_TO_ME = "come_to_me"
+
+        /** group chat: [text], maybe with where the sender is ([lat] / [lon]) */
+        const val CHAT = "chat"
 
         /** MIC_START: a walkie-talkie message (to everyone, played over the music, music ducked) */
         const val PURPOSE_WALKIE = "walkie"

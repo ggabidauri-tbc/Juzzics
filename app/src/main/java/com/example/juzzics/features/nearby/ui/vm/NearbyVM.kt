@@ -178,6 +178,8 @@ class NearbyVM(
             is DismissComeToMeAction -> nearby.dismissComeToMe()
             is TalkAction -> if (action.on) nearby.startTalking() else nearby.stopTalking()
             is ForgetRememberedAction -> nearby.forgetRememberedPhones()
+            is SendChatAction -> nearby.sendChat(action.text, action.withLocation)
+            is ChatOpenAction -> nearby.setChatOpen(action.open)
             is FindFriendsAction -> {
                 // visible and looking at once: nobody has to understand who shares and who looks
                 nearby.setSharing(true)
@@ -256,6 +258,10 @@ class NearbyVM(
     data class TalkAction(val on: Boolean) : Action
     /** paired phones compare codes again next time */
     data object ForgetRememberedAction : Action
+    /** group chat: to everyone; [withLocation]: "I'm here" too */
+    data class SendChatAction(val text: String, val withLocation: Boolean = false) : Action
+    /** the chat is on screen (nothing unread) / not */
+    data class ChatOpenAction(val open: Boolean) : Action
     /** this phone becomes visible and looks for friends */
     data object FindFriendsAction : Action
 }

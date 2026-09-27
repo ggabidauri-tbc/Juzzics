@@ -86,7 +86,27 @@ data class NearbyState(
     val talking: Boolean = false,
     /** walkie-talkie: a friend talking right now: their name */
     val talker: String? = null,
+    /** the group chat (this session only), oldest first */
+    val chat: List<ChatMessage> = emptyList(),
+    /** chat messages that came while the chat wasn't open */
+    val unreadChat: Int = 0,
     val error: String? = null,
+)
+
+/** A message in the group chat. [lat] / [lon]: where the sender was, if they shared it. */
+data class ChatMessage(
+    val id: String,
+    val from: String,
+    val fromMe: Boolean,
+    val text: String,
+    /** System.currentTimeMillis when it arrived / was sent */
+    val atMs: Long,
+    /** the sender's phone id (to find them on the radar) */
+    val personId: String? = null,
+    val lat: Double? = null,
+    val lon: Double? = null,
+    /** came through other phones */
+    val relayed: Boolean = false,
 )
 
 /** A song file on its way between two phones. */
@@ -174,6 +194,7 @@ enum class NearbyPanel(val title: String) {
     SHOUT_OUT("Shout-out"),
     RECEIVED("Songs friends sent"),
     RADAR("Friend radar"),
+    CHAT("Group chat"),
 }
 
 /** A point on a trail. */

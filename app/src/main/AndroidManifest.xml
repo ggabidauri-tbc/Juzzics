@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- friend radar: sharing your location keeps going with the screen off (started by you, with a notification) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- friend radar: "come to me" buzzes and shows a notification -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -107,11 +108,12 @@
             android:name=".features.nearby.data.SingingService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
-            <!-- friend radar: location sharing with the screen off -->
+            <!-- Nearby in the background: friends stay connected (chat, walkie-talkie), reconnecting,
+                 location sharing with the screen off -->
         <service
-            android:name=".features.nearby.data.LocationSharingService"
+            android:name=".features.nearby.data.NearbyService"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="connectedDevice|location" />
         <!-- sharing Juzzics itself with friends (share sheet: Quick Share, Bluetooth...) -->
         <provider
             android:name="androidx.core.content.FileProvider"

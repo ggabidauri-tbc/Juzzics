@@ -40,6 +40,10 @@ import com.example.juzzics.features.musics.ui.model.toDomain
 import com.example.juzzics.features.onboarding.AudioPermissionGate
 import com.example.juzzics.features.player.OpenPlayerRequests
 import com.example.juzzics.features.nearby.data.OpenRadarRequests
+import com.example.juzzics.features.nearby.data.NearbyManager
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import org.koin.compose.koinInject
 import com.example.juzzics.features.player.ui.MiniPlayerSpace
 import com.example.juzzics.features.player.ui.PlayerOverlay
 import com.example.juzzics.features.player.ui.vm.PlayerVM
@@ -90,6 +94,11 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(OpenRadarRequests.EXTRA_OPEN_RADAR, false) == true) {
             intent.removeExtra(OpenRadarRequests.EXTRA_OPEN_RADAR)
             OpenRadarRequests.request()
+        }
+        // a chat message notification: the group chat
+        if (intent?.getBooleanExtra(OpenRadarRequests.EXTRA_OPEN_CHAT, false) == true) {
+            intent.removeExtra(OpenRadarRequests.EXTRA_OPEN_CHAT)
+            OpenRadarRequests.requestChat()
         }
     }
 }
@@ -173,6 +182,9 @@ fun RowScope.ShowNavBar(
     rootNavController: NavHostController,
     navBackStackEntry: NavBackStackEntry?
 ) {
+    // unread group chat messages: a badge on Nearby
+    val nearbyState by koinInject<NearbyManager>().state.collectAsState()
+    val unread = nearbyState.unreadChat
     BottomNavItems.entries.forEach { item ->
         val isSelected = item.route == navBackStackEntry?.destination?.route
         NavigationBarItem(
@@ -180,10 +192,14 @@ fun RowScope.ShowNavBar(
             onClick = { rootNavController.navigateToTab(item.route) },
             label = { Text(text = item.title) },
             icon = {
-                Icon(
-                    imageVector = if (isSelected) item.selectedIcon else item.unSelectedIcon,
-                    contentDescription = item.title
-                )
+                BadgedBox(badge = {
+                    if (item == BottomNavItems.Nearby && unread > 0) Badge { Text(if (unread > 9) "9+" else "$unread") }
+                }) {
+                    Icon(
+                        imageVector = if (isSelected) item.selectedIcon else item.unSelectedIcon,
+                        contentDescription = item.title
+                    )
+                }
             }
         )
     }

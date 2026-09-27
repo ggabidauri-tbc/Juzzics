@@ -35,15 +35,30 @@ object OpenRadarRequests {
     /** increases with every request */
     val count: StateFlow<Int> = _count
 
-    fun request() = _count.update { it + 1 }
+    /** the last request is for the group chat (else the radar) */
+    @Volatile
+    var chat = false
+        private set
+
+    fun request() {
+        chat = false
+        _count.update { it + 1 }
+    }
+
+    fun requestChat() {
+        chat = true
+        _count.update { it + 1 }
+    }
 
     /** last request the app's navigation / the Nearby screen handled */
     var handledByNavigation = 0
     var handledByNearby = 0
 
-    /** in a notification's intent: open the radar */
+    /** in a notification's intent: open the radar / the group chat */
     const val EXTRA_OPEN_RADAR = "open_radar"
+    const val EXTRA_OPEN_CHAT = "open_chat"
 }
+
 
 /** Buzzes, beeps and notifications for the radar and the walkie-talkie. */
 class RadarAlerts(private val context: Context) {
@@ -74,6 +89,38 @@ class RadarAlerts(private val context: Context) {
             .setContentIntent(open)
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification) }
+    }
+
+    /** a chat message while the app isn't on screen: a notification (the newest replaces the last) */
+    @SuppressLint("MissingPermission") // checked in canNotify()
+    fun chat(from: String, text: String, unread: Int) {
+        vibrate(longArrayOf(0, 80))
+        if (!canNotify()) return
+        ensureChannel()
+        val open = PendingIntent.getActivity(
+            context,
+            8,
+            Intent(context, MainActivity::class.java)
+                .putExtra(OpenRadarRequests.EXTRA_OPEN_CHAT, true)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_music_note)
+            .setContentTitle(from)
+            .setContentText(text)
+            .setSubText(if (unread > 1) "$unread new in the group chat" else "Group chat")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(open)
+            .build()
+        runCatching { NotificationManagerCompat.from(context).notify(CHAT_NOTIFICATION_ID, notification) }
+    }
+
+    /** the chat was opened: its notification goes */
+    fun clearChat() {
+        runCatching { NotificationManagerCompat.from(context).cancel(CHAT_NOTIFICATION_ID) }
     }
 
     /** a meeting point was set: a short buzz */
@@ -126,6 +173,7 @@ class RadarAlerts(private val context: Context) {
 
     private companion object {
         const val CHANNEL_ID = "friends_nearby"
-        const val NOTIFICATION_ID = 4343
+        const val NOTIFICATION_ID = 4350
+        const val CHAT_NOTIFICATION_ID = 4351
     }
 }

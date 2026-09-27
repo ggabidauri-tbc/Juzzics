@@ -164,6 +164,18 @@ class FriendRadar(
         )
     }
 
+    /** a position that came another way (a chat message with "I'm here") */
+    fun notePosition(personId: String, name: String, lat: Double, lon: Double, accuracy: Float?, relayed: Boolean) {
+        val fix = GeoFix(lat, lon, accuracy ?: 50f, SystemClock.elapsedRealtime())
+        state = state.copy(
+            people = state.people + (personId to RadarPerson(name, fix, relayed)),
+            trails = withTrailPoint(personId, fix),
+        )
+    }
+
+    /** this phone's position, if known */
+    fun myPosition(): GeoFix? = state.me
+
     /** "meet here": everyone sees it with an arrow and a distance */
     fun setPin(lat: Double, lon: Double) {
         state = state.copy(pins = state.pins + (RadarState.ME to MeetingPin("You", lat, lon, mine = true)))

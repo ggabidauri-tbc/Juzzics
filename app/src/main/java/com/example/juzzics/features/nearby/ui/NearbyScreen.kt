@@ -19,6 +19,7 @@ import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -190,7 +191,7 @@ fun NearbyScreen(
                 onAction(NearbyVM.OpenFriendAction(null))
                 onAction(NearbyVM.OpenFriendPageAction(null))
                 onAction(NearbyVM.OpenBlendAction(false))
-                onAction(NearbyVM.OpenPanelAction(NearbyPanel.RADAR))
+                onAction(NearbyVM.OpenPanelAction(if (OpenRadarRequests.chat) NearbyPanel.CHAT else NearbyPanel.RADAR))
             }
         }
 
@@ -604,6 +605,17 @@ private fun TogetherGrid(nearby: NearbyState, received: List<ReceivedSong>, onAc
         )
         add(
             TogetherTile(
+                Icons.Filled.Forum, "Group chat",
+                when {
+                    nearby.unreadChat > 0 -> "${nearby.unreadChat} new"
+                    nearby.chat.isNotEmpty() -> nearby.chat.last().let { "${it.from}: ${it.text}" }
+                    else -> "Messages, no internet"
+                },
+                active = nearby.unreadChat > 0,
+            ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.CHAT)) }
+        )
+        add(
+            TogetherTile(
                 Icons.Filled.Inbox, "Received",
                 if (received.isEmpty()) "Songs friends send you" else "${received.size} songs",
             ) { onAction(NearbyVM.OpenPanelAction(NearbyPanel.RECEIVED)) }
@@ -707,6 +719,7 @@ private fun PanelPage(
                 NearbyPanel.SHOUT_OUT -> "A quick voice message, played over the music"
                 NearbyPanel.RECEIVED -> "The last songs friends sent you"
                 NearbyPanel.RADAR -> "Where everyone is, even without internet (GPS)"
+                NearbyPanel.CHAT -> "Everyone connected, no internet needed"
             },
             onBack = { onAction(NearbyVM.OpenPanelAction(null)) }
         )
@@ -722,6 +735,8 @@ private fun PanelPage(
                 hasFriends = nearby.friends.isNotEmpty(),
                 modifier = Modifier.weight(1f),
             )
+        } else if (panel == NearbyPanel.CHAT) {
+            ChatPanel(nearby = nearby, onAction = onAction, modifier = Modifier.weight(1f))
         } else if (panel == NearbyPanel.SING) {
             // the big button sits low, under the thumb
             SingCard(
@@ -767,6 +782,7 @@ private fun PanelPage(
                         onToggle = { onAction(NearbyVM.SetCarDjAction(it)) }
                     )
                     NearbyPanel.SING -> Unit
+                    NearbyPanel.CHAT -> Unit
                     NearbyPanel.SHOUT_OUT -> Unit
                     NearbyPanel.RADAR -> Unit
                     NearbyPanel.RECEIVED -> if (received.isEmpty()) {
