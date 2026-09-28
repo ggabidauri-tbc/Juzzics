@@ -1,7 +1,10 @@
 package com.example.juzzics.features.nearby.ui
 
 import android.location.Location
+import android.Manifest
 import android.content.ContentValues
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import android.content.Context
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -139,6 +142,10 @@ fun ChatPanel(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifie
         cameraUri?.let { if (taken) sendPhoto(it) }
     }
     var photoMenu by remember { mutableStateOf(false) }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) AppMessages.show("Allow the camera to take a photo (or choose one instead)")
+        else AppMessages.show("Now tap Take a photo again")
+    }
     val canSend = nearby.friends.isNotEmpty()
     fun send(message: String) {
         onAction(NearbyVM.SendChatAction(message, withLocation))
@@ -260,7 +267,11 @@ fun ChatPanel(nearby: NearbyState, onAction: (Action) -> Unit, modifier: Modifie
                         leadingIcon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
                         onClick = {
                             photoMenu = false
-                            runCatching {
+                            // (the app has the camera permission for the AR finder: Android then
+                            // wants it for the camera app too)
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                                cameraPermission.launch(Manifest.permission.CAMERA)
+                            } else runCatching {
                                 val dir = File(context.cacheDir, "camera").apply { mkdirs() }
                                 val file = File(dir, "photo_${System.currentTimeMillis()}.jpg")
                                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)

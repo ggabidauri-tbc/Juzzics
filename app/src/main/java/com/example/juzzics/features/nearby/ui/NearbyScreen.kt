@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -359,6 +360,7 @@ private fun NearbyHome(
                         FriendTile(friend, onClick = { onAction(NearbyVM.OpenFriendPageAction(friend.endpointId)) })
                     }
                     item { AddFriendTile(searching = nearby.searching, onClick = { onAction(NearbyVM.FindFriendsAction) }) }
+                    item { BumpTile(onClick = { onAction(NearbyVM.OpenPanelAction(NearbyPanel.BUMP)) }) }
                 }
             }
             if (nearby.searching || nearby.found.isNotEmpty()) {
@@ -423,9 +425,16 @@ private fun FindFriendsHero(nearby: NearbyState, onAction: (Action) -> Unit) {
                 Text("Looking… tap to stop", modifier = Modifier.padding(start = 10.dp))
             }
         } else {
-            Button(onClick = { onAction(NearbyVM.FindFriendsAction) }) {
-                Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("Find friends", modifier = Modifier.padding(start = 8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onAction(NearbyVM.FindFriendsAction) }) {
+                    Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Find friends", modifier = Modifier.padding(start = 8.dp))
+                }
+                // standing next to each other: quicker, no codes
+                OutlinedButton(onClick = { onAction(NearbyVM.OpenPanelAction(NearbyPanel.BUMP)) }) {
+                    Icon(Icons.Filled.Vibration, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Bump", modifier = Modifier.padding(start = 8.dp))
+                }
             }
         }
         if (nearby.found.isNotEmpty() || nearby.searching) {
@@ -543,6 +552,24 @@ private fun AddFriendTile(searching: Boolean, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.padding(top = 10.dp)
         )
+    }
+}
+
+/** "Bump": add a friend standing next to you by tapping phones together */
+@Composable
+private fun BumpTile(onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(96.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick)
+            .padding(14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Vibration, contentDescription = null)
+        }
+        Text("Bump", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 10.dp))
     }
 }
 
@@ -722,6 +749,7 @@ private fun PanelPage(
                 NearbyPanel.RECEIVED -> "The last songs friends sent you"
                 NearbyPanel.RADAR -> "Where everyone is, even without internet (GPS)"
                 NearbyPanel.CHAT -> "Messages and photos to everyone, no internet needed"
+                NearbyPanel.BUMP -> "Tap two phones together to connect, no codes"
             },
             onBack = { onAction(NearbyVM.OpenPanelAction(null)) }
         )
@@ -737,6 +765,8 @@ private fun PanelPage(
                 hasFriends = nearby.friends.isNotEmpty(),
                 modifier = Modifier.weight(1f),
             )
+        } else if (panel == NearbyPanel.BUMP) {
+            BumpPanel(bump = nearby.bump, onAction = onAction, modifier = Modifier.weight(1f))
         } else if (panel == NearbyPanel.CHAT) {
             ChatPanel(nearby = nearby, onAction = onAction, modifier = Modifier.weight(1f))
         } else if (panel == NearbyPanel.SING) {
@@ -785,6 +815,7 @@ private fun PanelPage(
                     )
                     NearbyPanel.SING -> Unit
                     NearbyPanel.CHAT -> Unit
+                    NearbyPanel.BUMP -> Unit
                     NearbyPanel.SHOUT_OUT -> Unit
                     NearbyPanel.RADAR -> Unit
                     NearbyPanel.RECEIVED -> if (received.isEmpty()) {

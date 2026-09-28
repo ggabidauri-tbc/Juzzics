@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.BatteryStd
 import androidx.compose.material.icons.filled.BatteryChargingFull
@@ -211,14 +212,17 @@ fun FriendRadarPanel(
     }
     // "Show on map" from the "come to me" card: the map opens there
     var focus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    // the AR finder (camera view with name tags), full screen
+    var showAr by remember { mutableStateOf(false) }
+    if (showAr) ArFinder(nearby = nearby, onClose = { showAr = false })
 
     Column(modifier) {
-        // Radar | Map
-        SingleChoiceSegmentedButtonRow(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+        // Radar | Map, and the AR finder
+        Row(
+            Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+        SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
             SegmentedButton(
                 selected = !asMap,
                 onClick = { onAction(NearbyVM.RadarModeAction(false)) },
@@ -233,6 +237,11 @@ fun FriendRadarPanel(
                 icon = { Icon(Icons.Filled.Map, contentDescription = null, modifier = Modifier.size(18.dp)) },
                 label = { Text("Map") }
             )
+        }
+        FilledTonalButton(onClick = { showAr = true }, modifier = Modifier.padding(start = 8.dp)) {
+            Icon(Icons.Filled.ViewInAr, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("AR", modifier = Modifier.padding(start = 6.dp))
+        }
         }
 
         // things to act on first: permissions, someone calling you over

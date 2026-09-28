@@ -182,6 +182,8 @@ class NearbyVM(
             is ChatOpenAction -> nearby.setChatOpen(action.open)
             is SendPhotoAction -> nearby.sendPhoto(action.uri, action.caption)
             is CheckMinutesAction -> nearby.setCheckMinutes(action.minutes)
+            is BumpModeAction -> if (action.on) nearby.startBump() else nearby.stopBump()
+            is TapBumpAction -> nearby.tapBump()
             is FindFriendsAction -> {
                 // visible and looking at once: nobody has to understand who shares and who looks
                 nearby.setSharing(true)
@@ -264,6 +266,10 @@ class NearbyVM(
     data class SendChatAction(val text: String, val withLocation: Boolean = false) : Action
     /** the chat is on screen (nothing unread) / not */
     data class ChatOpenAction(val open: Boolean) : Action
+    /** "bump to connect" open / closed */
+    data class BumpModeAction(val on: Boolean) : Action
+    /** "bump to connect": the "tap together" button */
+    data object TapBumpAction : Action
     /** "check on friends": alert after this many minutes without moving / news (0 = off) */
     data class CheckMinutesAction(val minutes: Int) : Action
     /** photo drop: to everyone, into the group chat */

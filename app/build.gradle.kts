@@ -121,6 +121,10 @@ dependencies {
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
     // friend map: maps that work offline (downloaded areas), OpenFreeMap tiles
     implementation("org.maplibre.gl:android-sdk:13.6.1")
+    // AR friend finder: the camera picture behind the name tags
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
 
     // home-screen widget
     implementation("androidx.glance:glance-appwidget:1.1.1")

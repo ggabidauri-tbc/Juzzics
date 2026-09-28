@@ -130,6 +130,8 @@ data class NearbyMessage(
         const val HELLO = "hello"
         /** the answer to HELLO's challenge */
         const val PROOF = "proof"
+        /** "bump to connect": "I just felt a bump" (the other phone felt one at the same moment: connected) */
+        const val BUMP = "bump"
         /** "still here" (every few seconds: a connection that quietly broke shows up as a failed send) */
         const val PING = "ping"
         /** "I'm disconnecting on purpose, don't reconnect" */

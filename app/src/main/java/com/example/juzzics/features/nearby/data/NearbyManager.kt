@@ -24,6 +24,7 @@ import com.example.juzzics.features.lyrics.domain.repo.LyricsRepo
 import com.example.juzzics.features.musics.domain.model.MusicFileDomain
 import com.example.juzzics.features.musics.domain.repo.MusicRepo
 import com.example.juzzics.features.nearby.domain.BlendItem
+import com.example.juzzics.features.nearby.domain.BumpState
 import com.example.juzzics.features.nearby.domain.ChatMessage
 import com.example.juzzics.features.nearby.domain.ConnectedFriend
 import com.example.juzzics.features.nearby.domain.NearbyDevice
@@ -582,6 +583,10 @@ class NearbyManager(
         (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "juzzics:reconnect")
             .apply { setReferenceCounted(false) }
+    /** phones the user tapped Connect on (their codes dialog is expected) */
+    private val userRequested = mutableSetOf<String>()
+    /** when the user last looked for friends (a friend's request can come a bit later) */
+    private var lastSearchAt = 0L
     /** the user turned "Visible to friends" off: reconnecting only looks, it doesn't advertise */
     private var hiddenByUser = false
     /** discovery wanted by the user ("Find friends") / by reconnecting, and running */
@@ -655,6 +660,7 @@ class NearbyManager(
     /** looks for friends' phones for a minute (searching uses battery) */
     fun startSearching() {
         userSearching = true
+        lastSearchAt = System.currentTimeMillis()
         _state.update { it.copy(found = emptyList(), error = null, searching = true) }
         stopSearchJob?.cancel()
         stopSearchJob = scope.launch {
@@ -678,7 +684,7 @@ class NearbyManager(
 
     /** discovery runs while the user searches or a lost friend is being looked for */
     private fun refreshDiscovery() {
-        val wanted = userSearching || reconnectScanning
+        val wanted = userSearching || reconnectScanning || bumping
         if (wanted && !discovering && !discoveryInFlight) {
             discoveryInFlight = true
             val options = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
@@ -696,12 +702,116 @@ class NearbyManager(
                 .addOnCompleteListener {
                     discoveryInFlight = false
                     // turned off meanwhile
-                    if (!userSearching && !reconnectScanning && discovering) refreshDiscovery()
+                    if (!userSearching && !reconnectScanning && !bumping && discovering) refreshDiscovery()
                 }
         } else if (!wanted && discovering) {
             client.stopDiscovery()
             discovering = false
         }
+    }
+
+    // ---------------------- bump to connect ----------------------
+
+    /** "bump to connect" is open */
+    private var bumping = false
+    /** bumping phones connected to (or connecting), not friends until the bump matches */
+    private val bumpCandidates = mutableSetOf<String>()
+    private val bumpConnected = mutableSetOf<String>()
+    /** when each candidate said it felt a bump (this phone's clock, when it arrived) */
+    private val remoteBumps = mutableMapOf<String, Long>()
+    private var myBumpAt = 0L
+    private var bumpTimeout: Job? = null
+    private val bumpDetector = BumpDetector(context) { at -> scope.launch { onLocalBump(at) } }
+
+    /**
+     * Opens "bump to connect": this phone shows it's bumping, finds other bumping phones and
+     * connects to them quietly (nothing but bumps goes through). Tapping two phones together
+     * makes both feel a jolt at the same moment: those two become friends, no codes.
+     */
+    fun startBump() {
+        if (bumping) return
+        bumping = true
+        _state.update { it.copy(bump = BumpState(noSensor = !bumpDetector.available)) }
+        bumpDetector.start()
+        restartAdvertising()
+        // a fresh search: phones seen before (not bumping then) show up again
+        if (discovering) {
+            client.stopDiscovery()
+            discovering = false
+        }
+        refreshDiscovery()
+        bumpTimeout?.cancel()
+        bumpTimeout = scope.launch {
+            delay(BUMP_MODE_MS)
+            stopBump()
+        }
+    }
+
+    fun stopBump() {
+        if (!bumping) return
+        bumping = false
+        bumpTimeout?.cancel()
+        bumpDetector.stop()
+        // the phones that weren't bumped: goodbye
+        bumpCandidates.toList().forEach { runCatching { client.disconnectFromEndpoint(it) } }
+        bumpCandidates.clear()
+        bumpConnected.clear()
+        remoteBumps.clear()
+        _state.update { it.copy(bump = null) }
+        restartAdvertising()
+        refreshDiscovery()
+    }
+
+    /** the "tap together" button (no motion sensor, or a gentle bump that wasn't felt) */
+    fun tapBump() = onLocalBump(SystemClock.elapsedRealtime())
+
+    private fun onLocalBump(at: Long) {
+        if (!bumping) return
+        myBumpAt = at
+        bumpConnected.forEach { send(it, NearbyMessage(NearbyMessage.BUMP)) }
+        // one of them bumped just before us
+        remoteBumps.filterValues { at - it in 0..BUMP_WINDOW_MS }.keys.firstOrNull()?.let(::bumped)
+    }
+
+    private fun onRemoteBump(endpointId: String) {
+        val now = SystemClock.elapsedRealtime()
+        remoteBumps[endpointId] = now
+        if (now - myBumpAt in 0..BUMP_WINDOW_MS) bumped(endpointId)
+    }
+
+    /** the same bump on both phones: friends now (paired, they reconnect by themselves later too) */
+    private fun bumped(endpointId: String) {
+        if (!bumpCandidates.remove(endpointId)) return
+        bumpConnected -= endpointId
+        remoteBumps -= endpointId
+        addFriend(endpointId, paired = true)
+        val name = friendName(endpointId)
+        alerts.pin()
+        _state.update { it.copy(bump = it.bump?.copy(connectedTo = name)) }
+        updateBumpState()
+        AppMessages.show("Connected to $name")
+    }
+
+    private fun connectForBump(endpointId: String, phoneId: String) {
+        if (endpointId in bumpCandidates) return
+        scope.launch {
+            // one of the two asks (the other a bit later, if nothing happened)
+            if (book.myId > phoneId) delay(3_000)
+            if (!bumping || endpointId in bumpCandidates || _state.value.friends.any { it.phoneId == phoneId }) return@launch
+            client.requestConnection(FriendBook.encodeName(displayName(), book.myId, bump = true), endpointId, connectionCallback)
+        }
+    }
+
+    private fun updateBumpState() {
+        _state.update { state -> state.copy(bump = state.bump?.copy(ready = bumpConnected.size)) }
+    }
+
+    /** advertising again under the current name (bumping or not) */
+    private fun restartAdvertising() {
+        if (hiddenByUser && !bumping) return
+        client.stopAdvertising()
+        advertisingInFlight = false
+        startAdvertising()
     }
 
     // ---------------------- reconnecting ----------------------
@@ -786,6 +896,12 @@ class NearbyManager(
     }
 
     private fun cleanUpEndpoint(endpointId: String) {
+        userRequested -= endpointId
+        if (bumpCandidates.remove(endpointId)) {
+            bumpConnected -= endpointId
+            remoteBumps -= endpointId
+            updateBumpState()
+        }
         myNonces -= endpointId
         probation.remove(endpointId)?.cancel()
         autoAccepted -= endpointId
@@ -796,6 +912,7 @@ class NearbyManager(
 
     fun connect(device: NearbyDevice) {
         if (_state.value.pending != null) return // already pairing with someone
+        userRequested += device.endpointId
         client.requestConnection(advertisedName(), device.endpointId, connectionCallback)
             .addOnFailureListener { e ->
                 when (e.statusCode()) {
@@ -1430,6 +1547,13 @@ class NearbyManager(
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val (name, phoneId) = FriendBook.decodeName(info.endpointName)
+            // both in "bump to connect": connect right away, the bump decides who stays
+            if (bumping && phoneId != null && FriendBook.isBumping(info.endpointName) &&
+                _state.value.friends.none { it.phoneId == phoneId }
+            ) {
+                connectForBump(endpointId, phoneId)
+                return
+            }
             if (phoneId != null) {
                 // already connected (e.g. it lost and found us again)
                 if (_state.value.friends.any { it.phoneId == phoneId }) return
@@ -1456,10 +1580,26 @@ class NearbyManager(
             val (name, phoneId) = FriendBook.decodeName(info.endpointName)
             names[endpointId] = name
             phoneId?.let { phoneIds[endpointId] = it }
+            // both in "bump to connect": no codes, the bump is the proof (until then: nothing but bumps)
+            // (also a phone paired before: one of the two may have forgotten the other, the bump pairs them anew)
+            if (bumping && phoneId != null && FriendBook.isBumping(info.endpointName)) {
+                bumpCandidates += endpointId
+                client.acceptConnection(endpointId, payloadCallback)
+                return
+            }
             if (phoneId != null && book.known(phoneId) != null && phoneId !in compareCodes) {
                 // paired before: no codes; it proves who it is once connected (startProbation)
                 autoAccepted += endpointId
                 client.acceptConnection(endpointId, payloadCallback)
+                return
+            }
+            // codes to compare only when this phone is looking for friends (or asked this one):
+            // never out of the blue (a phone that remembers us while we forgot it, a stranger)
+            val expected = userSearching || endpointId in userRequested ||
+                    System.currentTimeMillis() - lastSearchAt < EXPECT_REQUESTS_MS
+            if (!expected) {
+                rejectedByMe += endpointId
+                client.rejectConnection(endpointId)
                 return
             }
             _state.update {
@@ -1477,11 +1617,30 @@ class NearbyManager(
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             _state.update { if (it.pending?.endpointId == endpointId) it.copy(pending = null) else it }
             val iRejected = rejectedByMe.remove(endpointId)
+            if (endpointId in bumpCandidates) {
+                // connected and waiting for the bump
+                if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
+                    bumpConnected += endpointId
+                    updateBumpState()
+                } else cleanUpEndpoint(endpointId)
+                return
+            }
             val automatic = autoAccepted.remove(endpointId)
             if (automatic) {
                 // a paired phone: a friend again once it answers our question
                 if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) startProbation(endpointId)
-                else cleanUpEndpoint(endpointId)
+                else {
+                    // it doesn't know us any more (it said no without asking anyone): stop trying
+                    if (result.status.statusCode == ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED) {
+                        phoneIds[endpointId]?.let {
+                            book.forget(it)
+                            lost -= it
+                        }
+                        _state.update { it.copy(rememberedPhones = book.count) }
+                        updateReconnect()
+                    }
+                    cleanUpEndpoint(endpointId)
+                }
                 return
             }
             if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
@@ -1571,6 +1730,11 @@ class NearbyManager(
         when (message.type) {
             NearbyMessage.HELLO -> return receiveHello(endpointId, message)
             NearbyMessage.PROOF -> return receiveProof(endpointId, message)
+        }
+        // a bumping phone: only its bumps count, until they match ours
+        if (endpointId in bumpCandidates) {
+            if (message.type == NearbyMessage.BUMP) onRemoteBump(endpointId)
+            return
         }
         // a reconnected phone that hasn't proven who it is yet: nothing else
         if (_state.value.friends.none { it.endpointId == endpointId }) return
@@ -1884,7 +2048,7 @@ class NearbyManager(
     private fun displayName() = _state.value.deviceName.ifBlank { defaultName() }
 
     /** the name other phones see while searching, with this phone's lasting id */
-    private fun advertisedName() = FriendBook.encodeName(displayName(), book.myId)
+    private fun advertisedName() = FriendBook.encodeName(displayName(), book.myId, bump = bumping)
 
     private fun formatMeters(meters: Float): String =
         if (meters < 1_000f) "${meters.toInt()} m" else "%.1f km".format(meters / 1_000f)
@@ -1925,6 +2089,13 @@ class NearbyManager(
         /** the group chat keeps this many messages (this session only) */
         const val MAX_CHAT_MESSAGES = 300
         const val MAX_CHAT_CHARS = 500
+
+        /** two bumps this close (as they arrive) are the same bump */
+        const val BUMP_WINDOW_MS = 700L
+        /** a friend's connection request this long after we searched still shows the codes */
+        const val EXPECT_REQUESTS_MS = 3 * 60 * 1000L
+        /** "bump to connect" closes by itself after this long */
+        const val BUMP_MODE_MS = 3 * 60 * 1000L
 
         const val KEY_CHECK_MINUTES = "check_minutes"
         const val CHECK_EVERY_MS = 30_000L

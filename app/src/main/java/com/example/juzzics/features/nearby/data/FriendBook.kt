@@ -102,18 +102,26 @@ class FriendBook(context: Context) {
         /** Bluetooth advertisements are small: the name is cut to fit (UTF-8 bytes) */
         private const val MAX_NAME_BYTES = 90
 
-        /** "Nika's phone" + id, as the other phones see it while searching */
-        fun encodeName(name: String, phoneId: String): String {
+        /**
+         * "Nika's phone" + id, as the other phones see it while searching.
+         * [bump]: this phone is in "bump to connect" (other bumping phones connect to it by themselves)
+         */
+        fun encodeName(name: String, phoneId: String, bump: Boolean = false): String {
             var cut = name.replace(SEPARATOR.toString(), "")
             while (cut.toByteArray().size > MAX_NAME_BYTES) cut = cut.dropLast(1)
-            return "$cut$SEPARATOR$phoneId"
+            return "$cut$SEPARATOR$phoneId" + if (bump) "$SEPARATOR$BUMP_MARK" else ""
         }
 
         /** the name to show, and the phone's id (null: an older Juzzics without one) */
         fun decodeName(endpointName: String): Pair<String, String?> {
-            val at = endpointName.lastIndexOf(SEPARATOR)
-            if (at < 0) return endpointName to null
-            return endpointName.substring(0, at) to endpointName.substring(at + 1).ifBlank { null }
+            val parts = endpointName.split(SEPARATOR)
+            if (parts.size < 2) return endpointName to null
+            return parts[0] to parts[1].ifBlank { null }
         }
+
+        /** the phone is in "bump to connect" */
+        fun isBumping(endpointName: String): Boolean = endpointName.split(SEPARATOR).getOrNull(2) == BUMP_MARK
+
+        private const val BUMP_MARK = "b"
     }
 }

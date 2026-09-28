@@ -93,9 +93,21 @@ data class NearbyState(
     val chat: List<ChatMessage> = emptyList(),
     /** chat messages that came while the chat wasn't open */
     val unreadChat: Int = 0,
+    /** "bump to connect" is open (null: not) */
+    val bump: BumpState? = null,
     /** "check on friends": alert when someone sharing hasn't moved / hasn't been heard of this long (0 = off) */
     val checkMinutes: Int = 30,
     val error: String? = null,
+)
+
+/** "Bump to connect": how many bumping phones are ready, who was just connected. */
+data class BumpState(
+    /** other phones in bump mode, connected and waiting for the bump */
+    val ready: Int = 0,
+    /** the bump worked: connected to them */
+    val connectedTo: String? = null,
+    /** no motion sensor: only the "tap together" button works */
+    val noSensor: Boolean = false,
 )
 
 /** A message in the group chat. [lat] / [lon]: where the sender was, if they shared it. */
@@ -205,6 +217,7 @@ enum class NearbyPanel(val title: String) {
     SHOUT_OUT("Shout-out"),
     RECEIVED("Songs friends sent"),
     RADAR("Friend radar"),
+    BUMP("Bump to connect"),
     CHAT("Group chat"),
 }
 
