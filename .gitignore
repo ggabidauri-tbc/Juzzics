@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# signing keys never go in the repository (the release workflow gets it from a secret)
+*.jks
+*.keystore
+# ...except the shared testing key (not a secret: test builds only, see RELEASING.md)
+!app/testing.keystore

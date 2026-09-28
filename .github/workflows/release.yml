@@ -1,0 +1,97 @@
+# Builds a signed APK and puts it on a GitHub release, for testers to download.
+#
+# Runs when a version tag is pushed (e.g. `git tag v1.1 && git push origin v1.1`),
+# or by hand: Actions > "Release APK" > Run workflow (then it makes a "build-<number>" pre-release).
+#
+# Signing: with the four repository secrets KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS,
+# KEY_PASSWORD if they're set (the real release key, see RELEASING.md); otherwise with the
+# shared testing key in the repository (app/testing.keystore), fine for test builds.
+name: Release APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            NAME="${GITHUB_REF_NAME#v}"
+            TAG="$GITHUB_REF_NAME"
+            PRE=false
+          else
+            NAME="build-${GITHUB_RUN_NUMBER}"
+            TAG="build-${GITHUB_RUN_NUMBER}"
+            PRE=true
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "pre=$PRE" >> "$GITHUB_OUTPUT"
+
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Signing with the release key"
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+            {
+              echo "RELEASE_STORE_FILE=$RUNNER_TEMP/release.jks"
+              echo "RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD"
+              echo "RELEASE_KEY_ALIAS=$KEY_ALIAS"
+              echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+          else
+            echo "::notice::No release key secrets: signing with the shared testing key"
+            {
+              echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/app/testing.keystore"
+              echo "RELEASE_STORE_PASSWORD=juzzics-testing"
+              echo "RELEASE_KEY_ALIAS=testing"
+              echo "RELEASE_KEY_PASSWORD=juzzics-testing"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        env:
+          # every build gets a higher version code, so it installs over the previous one
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk "out/Juzzics-${{ steps.version.outputs.name }}.apk"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Juzzics ${{ steps.version.outputs.name }}
+          prerelease: ${{ steps.version.outputs.pre }}
+          generate_release_notes: true
+          files: out/*.apk
+          body: |
+            **Install:** download the APK below on your Android phone and open it.
+            If Android asks, allow installing apps from your browser / files app.
+            Updates install over the previous version (your songs, lyrics and friends stay).

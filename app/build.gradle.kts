@@ -16,8 +16,9 @@ android {
         applicationId = "com.example.juzzics"
         minSdk = 25
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // from the release workflow (a higher number each build, so updates install over older ones)
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("VERSION_NAME") ?: "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -25,8 +26,25 @@ android {
         }
     }
 
+    // the key testers' phones know the app by: the same for every release, or updates won't install.
+    // Given by the release workflow (repository secrets) or, for a local release build, by
+    // environment variables / ~/.gradle/gradle.properties (RELEASE_STORE_FILE, ...). See RELEASING.md
+    val releaseStoreFile = System.getenv("RELEASE_STORE_FILE") ?: providers.gradleProperty("RELEASE_STORE_FILE").orNull
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = file(releaseStoreFile)
+                storePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: providers.gradleProperty("RELEASE_STORE_PASSWORD").orNull
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: providers.gradleProperty("RELEASE_KEY_ALIAS").orNull
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: providers.gradleProperty("RELEASE_KEY_PASSWORD").orNull
+            }
+        }
+    }
+
     buildTypes {
         release {
+            // without the release key (a local build): the debug key, so it still installs for trying out
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
