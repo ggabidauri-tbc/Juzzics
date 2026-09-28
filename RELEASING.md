@@ -44,12 +44,12 @@ as before. Keep the key safe (a password manager), never commit it.
 
 ## Making a release
 
-```sh
-git tag v1.1
-git push origin v1.1
-```
+On GitHub: **Releases > Draft a new release**, choose a tag like `v1.1` (create it), give it a
+title and notes, **Publish**. GitHub Actions then builds the APK from that tag and adds
+`Juzzics-1.1.apk` to the release (a few minutes; watch it in the **Actions** tab).
 
-A few minutes later the release **Juzzics 1.1** is there with `Juzzics-1.1.apk`.
+The "Source code (zip / tar.gz)" files GitHub adds to every release are just the code; testers
+want the `.apk`.
 
 For a quick test build without a version: **Actions > Release APK > Run workflow**. It shows up
 as a pre-release `build-<number>`.

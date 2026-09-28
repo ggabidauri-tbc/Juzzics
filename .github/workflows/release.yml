@@ -1,7 +1,9 @@
 # Builds a signed APK and puts it on a GitHub release, for testers to download.
 #
-# Runs when a version tag is pushed (e.g. `git tag v1.1 && git push origin v1.1`),
-# or by hand: Actions > "Release APK" > Run workflow (then it makes a "build-<number>" pre-release).
+# Runs when:
+# - a release is published on GitHub (Releases > Draft a new release, tag e.g. v1.1 > Publish):
+#   the APK is built from that tag and added to the release
+# - by hand: Actions > "Release APK" > Run workflow (a "build-<number>" pre-release)
 #
 # Signing: with the four repository secrets KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS,
 # KEY_PASSWORD if they're set (the real release key, see RELEASING.md); otherwise with the
@@ -9,9 +11,8 @@
 name: Release APK
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -33,10 +34,10 @@ jobs:
       - name: Version
         id: version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            NAME="${GITHUB_REF_NAME#v}"
-            TAG="$GITHUB_REF_NAME"
-            PRE=false
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+            NAME="${TAG#v}"
+            PRE="${{ github.event.release.prerelease }}"
           else
             NAME="build-${GITHUB_RUN_NUMBER}"
             TAG="build-${GITHUB_RUN_NUMBER}"
@@ -83,7 +84,16 @@ jobs:
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk "out/Juzzics-${{ steps.version.outputs.name }}.apk"
 
+      # a release made on GitHub: just add the APK (its title and text stay as written)
+      - name: Add the APK to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: out/*.apk
+
       - name: Release
+        if: github.event_name != 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
